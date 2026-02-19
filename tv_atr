@@ -1,0 +1,89 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Amphibiantrading
+
+//@version=5
+indicator("ATR Quartiles", overlay = true)
+
+yPos            = input.string('Top', 'Table Position ', options = ['Top', 'Middle', 'Bottom'], inline = '00')
+xPos            = input.string('Center', ' ', options = ['Right','Center', 'Left'], inline = '00')
+tableBgColor    = input.color(color.white, 'Table Background Color')
+tableTextSize   = input.string('Normal', 'Text Size', options = ['Tiny','Small','Normal','Large','Huge'], inline = '0')
+tableTextColor  = input.color(color.black, 'Color', inline = '0')
+
+qtrCol          = input.color(color.lime, '0.25 ATR‏ ‏ ‏ ‏', inline = '1')
+qtrWidth        = input.int(1, '', inline = '1')
+qtrStyle        = input.string('Solid', '', ['Solid', 'Dashed', 'Dotted'], inline = '1')
+halfCol         = input.color(color.green, '0.50 ATR‏ ‏ ‏ ‏', inline = '2')
+halfWidth       = input.int(1, '', inline = '2')
+halfStyle       = input.string('Solid', '', ['Solid', 'Dashed', 'Dotted'], inline = '2')
+qtr3Col         = input.color(color.orange, '0.75 ATR‏ ‏ ‏ ‏', inline = '3')
+qtr3Width       = input.int(1, '', inline = '3')
+qtr3Style       = input.string('Solid', '', ['Solid', 'Dashed', 'Dotted'], inline = '3')
+atrCol          = input.color(color.fuchsia, '1 ATR ‏  ‏ ‏ ‏ ‏ ‏  ‏ ‏ ', inline = '4')
+atrWidth        = input.int(1, '', inline = '4')
+atrStyle        = input.string('Solid', '', ['Solid', 'Dashed', 'Dotted'], inline = '4')
+atrQtrCol       = input.color(color.red, '1.25 ATR‏ ‏  ‏  ‏', inline = '5')
+atrQtrWidth     = input.int(1, '', inline = '5')
+atrQtrStyle     = input.string('Solid', '', ['Solid', 'Dashed', 'Dotted'], inline = '5')
+atrHalfCol      = input.color(color.maroon, '1.5 ATR ‏ ‏  ‏  ‏ ‏', inline = '6')
+atrHalfWidth    = input.int(1, '', inline = '6')
+atrHalfStyle    = input.string('Solid', '', ['Solid', 'Dashed', 'Dotted'], inline = '6')
+atrQtr3Col      = input.color(color.navy, '1.75 ATR‏  ‏ ‏  ‏', inline = '7')
+atrQtr3Width    = input.int(1, '', inline = '7')
+atrQtr3Style    = input.string('Solid', '', ['Solid', 'Dashed', 'Dotted'], inline = '7')
+atrDubCol       = input.color(color.black, '2 ATR ‏  ‏ ‏ ‏ ‏  ‏ ‏  ‏ ', inline = '8')
+atrDubWidth     = input.int(1, '', inline = '8')
+atrDubStyle     = input.string('Solid', '', ['Solid', 'Dashed', 'Dotted'], inline = '8')
+
+method styler(string this)=>
+    switch this
+        'Solid' => line.style_solid
+        'Dashed' => line.style_dashed
+        'Dotted' => line.style_dotted
+
+txtSize = switch tableTextSize
+    'Tiny'      => size.tiny
+    'Small'     => size.small
+    'Normal'    => size.normal
+    'Large'     => size.large
+    'Huge'      => size.huge
+
+type lineDrawing
+    color levCol
+    int levWidth
+    string levStyle
+
+var colArr = array.from(lineDrawing.new(qtrCol, qtrWidth, qtrStyle.styler()), lineDrawing.new(halfCol, halfWidth, halfStyle.styler()), lineDrawing.new(qtr3Col, qtr3Width, qtr3Style.styler()),
+     lineDrawing.new(atrCol, atrWidth, atrStyle.styler()), lineDrawing.new(atrQtrCol, atrQtrWidth, atrQtrStyle.styler()), lineDrawing.new(atrHalfCol, atrHalfWidth, atrHalfStyle.styler()),
+     lineDrawing.new(atrQtr3Col, atrQtr3Width, atrQtr3Style.styler()), lineDrawing.new(atrDubCol, atrDubWidth, atrDubStyle.styler()), lineDrawing.new(qtrCol, qtrWidth, qtrStyle.styler()), 
+     lineDrawing.new(halfCol, halfWidth, halfStyle.styler()), lineDrawing.new(qtr3Col, qtr3Width, qtr3Style.styler()), lineDrawing.new(atrCol, atrWidth, atrStyle.styler()), 
+     lineDrawing.new(atrQtrCol, atrQtrWidth, atrQtrStyle.styler()), lineDrawing.new(atrHalfCol, atrHalfWidth, atrHalfStyle.styler()), lineDrawing.new(atrQtr3Col, atrQtr3Width, atrQtr3Style.styler()), 
+     lineDrawing.new(atrDubCol, atrDubWidth, atrDubStyle.styler()))
+
+[atr, dayOpen, dayHigh, dayLow, dayClose] = request.security(syminfo.tickerid, 'D', [ta.atr(10), open, high, low, close], lookahead = barmerge.lookahead_on)
+
+qtr     = atr / 4
+half    = qtr * 2
+qtr3    = qtr * 3
+
+atrArr = array.from(dayOpen + qtr, dayOpen + half, dayOpen + qtr3, dayOpen + atr, dayOpen + atr + qtr, dayOpen + atr + half, dayOpen + atr + qtr3, dayOpen + atr *2,
+     dayOpen - qtr, dayOpen - half, dayOpen - qtr3, dayOpen - atr, dayOpen - atr - qtr, dayOpen - atr - half, dayOpen - atr - qtr3, dayOpen - atr *2)
+
+var table data  = table.new(str.lower(yPos) + '_' + str.lower(xPos), 5, 1, tableBgColor, color.black, 2, color.black, 2)
+var lines       = array.new<line>()
+
+if barstate.islast
+    data.cell(0,0, 'ATR: ' + str.tostring(atr, format.mintick), text_color = tableTextColor, text_size = txtSize)
+    data.cell(1,0, dayClose > dayOpen ? 'ATR + Open: ' + str.tostring(atr + dayOpen, format.mintick) : 'Open - ATR: ' + str.tostring(dayOpen - atr, format.mintick), text_color = tableTextColor, text_size = txtSize)
+    data.cell(2,0, 'Close % ATR: ' + str.tostring(math.round((dayClose - dayOpen) / atr, 2) * 100) + '%', text_color = tableTextColor, text_size = txtSize)
+    data.cell(3,0, dayClose > dayOpen ? 'HOD % ATR: ' + str.tostring(math.round((dayHigh - dayOpen) / atr, 2) * 100) + '%' : 
+         'LOD % ATR: ' + str.tostring(math.round((dayLow - dayOpen) / atr, 2) * 100) + '%', text_color = tableTextColor, text_size = txtSize)
+
+if timeframe.change('D')
+    for l in lines
+        l.delete()
+    lines.clear()
+    for [idx,lev] in atrArr
+        setting = colArr.get(idx)
+        lines.push(line.new(time, lev, time + timeframe.in_seconds('D') * 1000, lev, xloc.bar_time, extend.none, setting.levCol, setting.levStyle, setting.levWidth))
+
