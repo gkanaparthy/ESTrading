@@ -19,7 +19,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             LOD,
             HOD,
             StructuralBull,
-            StructuralBear
+            StructuralBear,
+            RallyOrigin,
+            SelloffOrigin,
+            WeeklyOpen
         }
 
         private enum LodTier
@@ -60,6 +63,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private AnchorKind structuralOverrideKind;
         private double structuralOverridePrice;
         private int structuralOverrideBarIndex;
+        private int structuralOverrideActivatedBarIndex;
         private int overrideCooldownRemaining;
 
         private int opportunitiesToday;
@@ -101,6 +105,24 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool tierBAttemptUsed;
         private string lastAnchorStateKey = string.Empty;
 
+        // Persistent impulse-origin anchors (start candle of sharp directional move)
+        private int rallyOriginBarIndex = -1;
+        private double rallyOriginPrice;
+        private double rallyOriginScore;
+        private int selloffOriginBarIndex = -1;
+        private double selloffOriginPrice;
+        private double selloffOriginScore;
+
+        // Week-to-date AVWAP anchor (anchored from Sunday 17:00 CT)
+        private int wtdAnchorBarIndex = -1;
+        private double wtdAnchorOpenPrice;
+        private bool wtdAnchorSet;
+        private int wtdAnchorWeekYear = -1; // ISO week key: year*100 + weekOfYear, prevents re-anchoring within same hour
+        private double wtdPV;               // running sum of (typical price × volume) since anchor bar
+        private double wtdVSum;             // running sum of volume since anchor bar
+        private bool wtdSeededThisBar;
+        private int wtdDeferredWeekYear = -1;
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -137,6 +159,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 DailyStopR = -2.0;
                 MaxRiskPerTradeDollars = 400.0;
                 AllowRiskCapStopCompression = true;
+                MaxStopCompressionFraction = 0.25;
                 UseSessionAtrForStops = true;
 
                 StructureLookbackBars = 40;
@@ -147,10 +170,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ChopFlipThreshold = 4;
                 StructureScoreMargin = 1.2;
                 OverrideCooldownBars = 20;
+                MinOverrideActiveBars = 3;
                 GapThresholdPoints = 8.0;
 
                 AdxChopThreshold = 18;
-                ExtremeAtrThreshold = 10.0;
+                ExtremeAtrThreshold = 12.0;
                 MinAtrForEntry = 1.5;
                 DefendedLowImpulseAtr = 1.5;
                 DefendedLowMaxBars = 10;
@@ -160,6 +184,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 EnableAnchorLogging = true;
                 ShowAnchorStatusOnChart = true;
+                EnableWtdAnchor = true;
+                EnableImpulseOriginAnchors = true;
             }
             else if (State == State.DataLoaded)
             {
@@ -175,6 +201,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 dayHighBarIndex = -1;
                 dayLowBarIndex = -1;
                 structuralOverrideBarIndex = -1;
+                structuralOverrideActivatedBarIndex = -1;
+                rallyOriginBarIndex = -1;
+                selloffOriginBarIndex = -1;
 
                 Print("CONFIG instrument=" + Instrument?.FullName +
                       " barsType=" + BarsPeriod?.BarsPeriodType +
@@ -195,6 +224,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
 
             ResetDailyStateIfNeeded();
+            wtdSeededThisBar = false;
+            UpdateWtdAnchorIfNeeded();         // resets and seeds accumulators on new week / cold start
+            UpdateWtdRunningAccumulator();     // adds current bar's contribution (skips anchor bar)
             UpdateSessionAtrForStops();
             UpdateGapDayFlag();
             int nowCme = GetCmeTimeInt(Time[0]);
@@ -207,6 +239,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             UpdateSessionExtremes(canRefreshAnchors);
             RecoverLodFromDefendedLow();
             RecoverHodFromDefendedHigh();
+            UpdateImpulseOriginAnchors(canRefreshAnchors, nowCme);
 
             if (overrideCooldownRemaining > 0)
                 overrideCooldownRemaining--;
@@ -245,7 +278,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (canCreateOrSwitchAnchors && !structuralOverrideUsed && inTradeWindow)
                 TryPromoteStructuralAnchor(nowCme);
 
-            if (structuralOverrideActive && IsAnchorDegraded(GetStructuralAvwapOrPrice()))
+            bool overrideHasLivedLongEnough =
+                structuralOverrideActivatedBarIndex < 0 ||
+                (CurrentBar - structuralOverrideActivatedBarIndex) >= MinOverrideActiveBars;
+
+            if (structuralOverrideActive &&
+                overrideHasLivedLongEnough &&
+                IsAnchorDegraded(GetStructuralAvwapOrPrice()))
             {
                 if (EnableAnchorLogging)
                 {
@@ -255,6 +294,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
 
                 structuralOverrideActive = false;
+                structuralOverrideActivatedBarIndex = -1;
             }
 
             double longAnchor = GetLongAnchor(out AnchorKind longKind, out int longAnchorBar);
@@ -309,23 +349,61 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (adx[0] < AdxChopThreshold && (longAnchorChoppy || shortAnchorChoppy))
                 return;
 
-            bool entryVolumeConfirmed = Volume[0] >= volSma[0];
-
             bool longSignal = longAnchorUsable &&
                               HasReclaimAbove(longAnchor, ReclaimLookbackBars) &&
                               Low[0] <= longAnchor + zone &&
-                              entryVolumeConfirmed &&
                               Close[0] > Open[0];
 
             bool shortAnchorSignalEligible =
-                shortKind == AnchorKind.HOD || shortKind == AnchorKind.StructuralBear;
+                shortKind == AnchorKind.HOD ||
+                shortKind == AnchorKind.StructuralBear ||
+                shortKind == AnchorKind.SelloffOrigin ||
+                shortKind == AnchorKind.WeeklyOpen;
 
             bool shortSignal = shortAnchorSignalEligible &&
                                shortAnchorUsable &&
                                HasRejectBelow(shortAnchor, ReclaimLookbackBars) &&
                                High[0] >= shortAnchor - zone &&
-                               entryVolumeConfirmed &&
                                Close[0] < Open[0];
+
+            if (EnableAnchorLogging)
+            {
+                double wtdVal = GetWtdAvwap();
+                string wtdStr = double.IsNaN(wtdVal) ? "NA" : wtdVal.ToString("F2");
+
+                // Long sub-conditions (broken out individually)
+                bool lUsable   = longAnchorUsable;
+                bool lReclaim  = !double.IsNaN(longAnchor) && HasReclaimAbove(longAnchor, ReclaimLookbackBars);
+                bool lZone     = !double.IsNaN(longAnchor) && Low[0] <= longAnchor + zone;
+                bool lCandle   = Close[0] > Open[0];
+
+                // Short sub-conditions (broken out individually)
+                bool sEligible = shortAnchorSignalEligible;
+                bool sUsable   = shortAnchorUsable;
+                bool sReject   = !double.IsNaN(shortAnchor) && HasRejectBelow(shortAnchor, ReclaimLookbackBars);
+                bool sZone     = !double.IsNaN(shortAnchor) && High[0] >= shortAnchor - zone;
+                bool sCandle   = Close[0] < Open[0];
+
+                string lodStr  = double.IsNaN(longAnchor)  ? "NA" : longAnchor.ToString("F2");
+                string hodStr  = double.IsNaN(shortAnchor) ? "NA" : shortAnchor.ToString("F2");
+
+                PrintWithContext("SIGNAL_CHECK" +
+                      " lod=" + lodStr + " hod=" + hodStr + " wtd=" + wtdStr +
+                      " trend=" + (bullishTrend ? "BULL" : "BEAR") +
+                      " | LONG: usable=" + lUsable +
+                      " reclaim=" + lReclaim +
+                      " zone=" + lZone +
+                      " candle=" + lCandle +
+                      " trend=" + bullishTrend +
+                      " =>" + longSignal +
+                      " | SHORT: eligible=" + sEligible +
+                      " usable=" + sUsable +
+                      " reject=" + sReject +
+                      " zone=" + sZone +
+                      " candle=" + sCandle +
+                      " trend=" + bearishTrend +
+                      " =>" + shortSignal);
+            }
 
             if (longSignal && shortSignal)
                 return;
@@ -360,6 +438,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                           " quantity=" + quantity +
                           " maxRisk=" + MaxRiskPerTradeDollars.ToString("F0"));
                     return;
+                }
+
+                if (stopCompressed && originalStopTicks > 0)
+                {
+                    double compressionFraction = (originalStopTicks - stopTicks) / (double)originalStopTicks;
+                    if (compressionFraction > MaxStopCompressionFraction)
+                    {
+                        PrintWithContext("SKIP_STOP_COMPRESSION side=LONG fromTicks=" + originalStopTicks +
+                              " toTicks=" + stopTicks +
+                              " compressionFrac=" + compressionFraction.ToString("F2") +
+                              " maxCompressionFrac=" + MaxStopCompressionFraction.ToString("F2"));
+                        return;
+                    }
                 }
 
                 if (stopCompressed && EnableAnchorLogging)
@@ -420,6 +511,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                           " quantity=" + quantity +
                           " maxRisk=" + MaxRiskPerTradeDollars.ToString("F0"));
                     return;
+                }
+
+                if (stopCompressed && originalStopTicks > 0)
+                {
+                    double compressionFraction = (originalStopTicks - stopTicks) / (double)originalStopTicks;
+                    if (compressionFraction > MaxStopCompressionFraction)
+                    {
+                        PrintWithContext("SKIP_STOP_COMPRESSION side=SHORT fromTicks=" + originalStopTicks +
+                              " toTicks=" + stopTicks +
+                              " compressionFrac=" + compressionFraction.ToString("F2") +
+                              " maxCompressionFrac=" + MaxStopCompressionFraction.ToString("F2"));
+                        return;
+                    }
                 }
 
                 if (stopCompressed && EnableAnchorLogging)
@@ -577,7 +681,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             structuralOverridePrice = 0;
             structuralOverrideKind = AnchorKind.LOD;
             structuralOverrideBarIndex = -1;
+            structuralOverrideActivatedBarIndex = -1;
             overrideCooldownRemaining = 0;
+            rallyOriginBarIndex = -1;
+            rallyOriginPrice = 0;
+            rallyOriginScore = 0;
+            selloffOriginBarIndex = -1;
+            selloffOriginPrice = 0;
+            selloffOriginScore = 0;
 
             opportunitiesToday = 0;
             consecutiveLosses = 0;
@@ -818,6 +929,143 @@ namespace NinjaTrader.NinjaScript.Strategies
             return morning || afternoon;
         }
 
+        // Anchors the WTD AVWAP once per week at the Sunday 17:00 CT bar.
+        // Two paths:
+        //   1) Normal weekly reset: fires on the exact Sunday 17:00 CT bar for a new calendar week.
+        //   2) Cold start: scans backward through available history to find the most recent
+        //      Sunday 17:00 bar and pre-computes the accumulator from there.
+        private void UpdateWtdAnchorIfNeeded()
+        {
+            if (!EnableWtdAnchor)
+                return;
+
+            DateTime cmeNow = GetCmeTime(Time[0]);
+
+            var cal = System.Globalization.CultureInfo.InvariantCulture.Calendar;
+            int weekOfYear = cal.GetWeekOfYear(cmeNow, System.Globalization.CalendarWeekRule.FirstFourDayWeek, DayOfWeek.Monday);
+            int weekKey = cmeNow.Year * 100 + weekOfYear;
+
+            bool isNewWeek = weekKey != wtdAnchorWeekYear;
+            bool isSundayOpenBar = cmeNow.DayOfWeek == DayOfWeek.Sunday && cmeNow.Hour == 17 && cmeNow.Minute == 0;
+
+            // Path 1: Normal weekly reset on the exact Sunday 17:00 bar
+            if (isSundayOpenBar && isNewWeek)
+            {
+                SetWtdAnchorToCurrentBar(cmeNow, weekKey);
+                wtdDeferredWeekYear = -1;
+                return;
+            }
+
+            // Path 2: Cold start — scan backward for the most recent Sunday 17:00 bar
+            if (!wtdAnchorSet)
+            {
+                if (wtdDeferredWeekYear == weekKey)
+                    return;
+
+                TryInitWtdAnchorFromHistory(cmeNow, weekKey);
+            }
+        }
+
+        // Sets the WTD anchor to the current bar and seeds the running accumulator.
+        // Used by the normal Sunday 17:00 weekly reset path.
+        private void SetWtdAnchorToCurrentBar(DateTime cmeNow, int weekKey)
+        {
+            wtdAnchorBarIndex  = CurrentBar;
+            wtdAnchorOpenPrice = Open[0];
+            wtdAnchorSet       = true;
+            wtdAnchorWeekYear  = weekKey;
+            wtdSeededThisBar   = true;
+
+            double anchorTypical = (High[0] + Low[0] + Close[0]) / 3.0;
+            double anchorVol     = Volume[0] > 0 ? Volume[0] : 0;
+            wtdPV   = anchorTypical * anchorVol;
+            wtdVSum = anchorVol;
+
+            if (EnableAnchorLogging)
+                PrintWithContext("WTD_ANCHOR_RESET timeCME=" + cmeNow.ToString("yyyy-MM-dd HH:mm") +
+                      " weekKey=" + weekKey +
+                      " bar=" + CurrentBar +
+                      " open=" + wtdAnchorOpenPrice.ToString("F2"));
+        }
+
+        // Scans backward through all available bar history to find the most
+        // recent Sunday 17:00 CT bar. If found, sets the anchor there and pre-computes the
+        // full running accumulator from that bar to now. If not found, leaves wtdAnchorSet=false
+        // so the anchor activates naturally on the next Sunday 17:00.
+        private void TryInitWtdAnchorFromHistory(DateTime cmeNow, int currentWeekKey)
+        {
+            var cal = System.Globalization.CultureInfo.InvariantCulture.Calendar;
+            int maxLookback = CurrentBar;
+
+            // Scan from current bar backward (i=0 is current, i=maxLookback is oldest).
+            // Stop on the FIRST Sunday 17:00 hit — that is the most recent weekly open.
+            for (int i = 0; i <= maxLookback; i++)
+            {
+                DateTime barCme = GetCmeTime(Time[i]);
+                if (barCme.DayOfWeek != DayOfWeek.Sunday || barCme.Hour != 17 || barCme.Minute != 0)
+                    continue;
+
+                // Found the most recent Sunday 17:xx anchor bar
+                int anchorAbsBar  = CurrentBar - i;
+                int foundWeekKey  = barCme.Year * 100 +
+                    cal.GetWeekOfYear(barCme, System.Globalization.CalendarWeekRule.FirstFourDayWeek, DayOfWeek.Monday);
+
+                wtdAnchorBarIndex  = anchorAbsBar;
+                wtdAnchorOpenPrice = Open[i];
+                wtdAnchorSet       = true;
+                wtdAnchorWeekYear  = foundWeekKey;
+                wtdSeededThisBar   = true;
+
+                // Pre-compute the full accumulator from the anchor bar (i) through now (0)
+                wtdPV   = 0;
+                wtdVSum = 0;
+                for (int j = i; j >= 0; j--)
+                {
+                    double vol = Volume[j] > 0 ? Volume[j] : 0;
+                    if (vol <= 0)
+                        continue;
+                    double typical = (High[j] + Low[j] + Close[j]) / 3.0;
+                    wtdPV   += typical * vol;
+                    wtdVSum += vol;
+                }
+
+                if (EnableAnchorLogging)
+                    PrintWithContext("WTD_ANCHOR_COLD_START timeCME=" + cmeNow.ToString("yyyy-MM-dd HH:mm") +
+                          " foundSunday1700=" + barCme.ToString("yyyy-MM-dd HH:mm") +
+                          " barsBack=" + i +
+                          " anchorBar=" + anchorAbsBar +
+                          " weekKey=" + foundWeekKey +
+                          " open=" + wtdAnchorOpenPrice.ToString("F2") +
+                          " wtdAvwap=" + (wtdVSum > 0 ? (wtdPV / wtdVSum).ToString("F2") : "NA"));
+                return;
+            }
+
+            wtdDeferredWeekYear = currentWeekKey;
+
+            // No Sunday 17:00 bar found in the available history — defer until next week
+            if (EnableAnchorLogging)
+                PrintWithContext("WTD_ANCHOR_DEFERRED timeCME=" + cmeNow.ToString("yyyy-MM-dd HH:mm") +
+                      " reason=NoSundayBarInHistory maxLookback=" + maxLookback);
+        }
+
+        // Accumulates one bar's contribution to the WTD AVWAP running totals.
+        // Called every bar after UpdateWtdAnchorIfNeeded() so the anchor bar itself
+        // is never double-counted (it is seeded inside UpdateWtdAnchorIfNeeded).
+        private void UpdateWtdRunningAccumulator()
+        {
+            if (!EnableWtdAnchor || !wtdAnchorSet)
+                return;
+
+            // Skip the bar used to seed/reset the WTD accumulator on this same OnBarUpdate.
+            if (wtdSeededThisBar || CurrentBar == wtdAnchorBarIndex)
+                return;
+
+            double typical = (High[0] + Low[0] + Close[0]) / 3.0;
+            double vol = Volume[0] > 0 ? Volume[0] : 0;
+            wtdPV   += typical * vol;
+            wtdVSum += vol;
+        }
+
         private bool ShouldSuppressGapDayInvalidation(int nowCme)
         {
             return isGapDay && nowCme < CmeMorningWindowStart;
@@ -867,6 +1115,42 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return GetAvwapFromBar(structuralOverrideBarIndex, structuralOverridePrice);
             }
 
+            // Impulse-origin long anchor: start candle of a sharp rally.
+            // Promote when LOD is invalidated/degraded and price is holding above the origin AVWAP.
+            if (EnableImpulseOriginAnchors && rallyOriginBarIndex >= 0)
+            {
+                double rallyAvwap = GetAvwapFromBar(rallyOriginBarIndex, rallyOriginPrice);
+                if (!double.IsNaN(rallyAvwap) && Close[0] > rallyAvwap && !IsAnchorDegraded(rallyAvwap))
+                {
+                    double lodAvwap = lodInvalidated ? double.NaN : GetAvwapFromBar(dayLowBarIndex, dayLow);
+                    bool lodDegradedOrGone = lodInvalidated || (!double.IsNaN(lodAvwap) && IsAnchorDegraded(lodAvwap));
+                    if (lodDegradedOrGone)
+                    {
+                        kind = AnchorKind.RallyOrigin;
+                        anchorBarIndex = rallyOriginBarIndex;
+                        return rallyAvwap;
+                    }
+                }
+            }
+
+            // WTD anchor as long support: eligible when LOD is invalidated OR degraded,
+            // price is above WTD AVWAP, and WTD AVWAP is not itself degraded.
+            if (EnableWtdAnchor && wtdAnchorSet && wtdAnchorBarIndex >= 0)
+            {
+                double wtd = GetWtdAvwap();
+                if (!double.IsNaN(wtd) && Close[0] > wtd && !IsAnchorDegraded(wtd))
+                {
+                    double lodAvwap = lodInvalidated ? double.NaN : GetAvwapFromBar(dayLowBarIndex, dayLow);
+                    bool lodDegradedOrGone = lodInvalidated || (!double.IsNaN(lodAvwap) && IsAnchorDegraded(lodAvwap));
+                    if (lodDegradedOrGone)
+                    {
+                        kind = AnchorKind.WeeklyOpen;
+                        anchorBarIndex = wtdAnchorBarIndex;
+                        return wtd;
+                    }
+                }
+            }
+
             if (lodInvalidated)
             {
                 kind = AnchorKind.LOD;
@@ -888,6 +1172,42 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return GetAvwapFromBar(structuralOverrideBarIndex, structuralOverridePrice);
             }
 
+            // Impulse-origin short anchor: start candle of a sharp selloff.
+            // Promote when HOD is invalidated/degraded and price is holding below the origin AVWAP.
+            if (EnableImpulseOriginAnchors && selloffOriginBarIndex >= 0)
+            {
+                double selloffAvwap = GetAvwapFromBar(selloffOriginBarIndex, selloffOriginPrice);
+                if (!double.IsNaN(selloffAvwap) && Close[0] < selloffAvwap && !IsAnchorDegraded(selloffAvwap))
+                {
+                    double hodAvwap = hodInvalidated ? double.NaN : GetAvwapFromBar(dayHighBarIndex, dayHigh);
+                    bool hodDegradedOrGone = hodInvalidated || (!double.IsNaN(hodAvwap) && IsAnchorDegraded(hodAvwap));
+                    if (hodDegradedOrGone)
+                    {
+                        kind = AnchorKind.SelloffOrigin;
+                        anchorBarIndex = selloffOriginBarIndex;
+                        return selloffAvwap;
+                    }
+                }
+            }
+
+            // WTD anchor as short resistance: eligible when HOD is invalidated OR degraded,
+            // price is below WTD AVWAP, and WTD AVWAP is not itself degraded.
+            if (EnableWtdAnchor && wtdAnchorSet && wtdAnchorBarIndex >= 0)
+            {
+                double wtd = GetWtdAvwap();
+                if (!double.IsNaN(wtd) && Close[0] < wtd && !IsAnchorDegraded(wtd))
+                {
+                    double hodAvwap = hodInvalidated ? double.NaN : GetAvwapFromBar(dayHighBarIndex, dayHigh);
+                    bool hodDegradedOrGone = hodInvalidated || (!double.IsNaN(hodAvwap) && IsAnchorDegraded(hodAvwap));
+                    if (hodDegradedOrGone)
+                    {
+                        kind = AnchorKind.WeeklyOpen;
+                        anchorBarIndex = wtdAnchorBarIndex;
+                        return wtd;
+                    }
+                }
+            }
+
             if (hodInvalidated)
             {
                 kind = AnchorKind.HOD;
@@ -906,6 +1226,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return fallbackPrice;
 
             int anchorBarsAgo = CurrentBar - anchorBarIndex;
+
+            // All callers (LOD/HOD: intraday, Structural: <=40 bars) are within the 256-bar window.
+            // WTD now uses a running accumulator (GetWtdAvwap) and no longer calls this method.
+
             double pv = 0;
             double vSum = 0;
 
@@ -921,6 +1245,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             return vSum > 0 ? pv / vSum : fallbackPrice;
+        }
+
+        private double GetWtdAvwap()
+        {
+            if (!EnableWtdAnchor || !wtdAnchorSet || wtdAnchorBarIndex < 0)
+                return double.NaN;
+
+            // Use the running accumulator — accurate for any number of bars since the
+            // Sunday 17:00 CT anchor, with no dependency on NinjaTrader's 256-bar lookback limit.
+            return wtdVSum > 0 ? wtdPV / wtdVSum : wtdAnchorOpenPrice;
         }
 
         private bool HasReclaimAbove(double anchor, int lookbackBars)
@@ -1179,6 +1513,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             structuralOverrideKind = kind;
             structuralOverridePrice = candidatePrice;
             structuralOverrideBarIndex = candidateBarIndex;
+            structuralOverrideActivatedBarIndex = CurrentBar;
             overrideCooldownRemaining = OverrideCooldownBars;
 
             if (EnableAnchorLogging)
@@ -1190,6 +1525,74 @@ namespace NinjaTrader.NinjaScript.Strategies
                       " candidateScore=" + candidateScore.ToString("F2") +
                       " baseScore=" + baseScore.ToString("F2"));
             }
+        }
+
+        private void UpdateImpulseOriginAnchors(bool allowAnchorRefresh, int nowCme)
+        {
+            if (!EnableImpulseOriginAnchors || !allowAnchorRefresh)
+                return;
+
+            AnchorKind ignoredKind;
+
+            if (TryFindStructuralAnchor(
+                    true,
+                    out double bullPrice,
+                    out int bullBarIndex,
+                    out ignoredKind,
+                    out double bullScore) &&
+                ShouldReplaceImpulseOriginAnchor(rallyOriginBarIndex, rallyOriginScore, bullBarIndex, bullScore))
+            {
+                rallyOriginBarIndex = bullBarIndex;
+                rallyOriginPrice = bullPrice;
+                rallyOriginScore = bullScore;
+
+                if (EnableAnchorLogging)
+                {
+                    PrintWithContext("ORIGIN_ANCHOR_SET side=LONG timeCME=" + FormatCmeTime(nowCme) +
+                          " bar=" + bullBarIndex +
+                          " price=" + bullPrice.ToString("F2") +
+                          " score=" + bullScore.ToString("F2"));
+                }
+            }
+
+            if (TryFindStructuralAnchor(
+                    false,
+                    out double bearPrice,
+                    out int bearBarIndex,
+                    out ignoredKind,
+                    out double bearScore) &&
+                ShouldReplaceImpulseOriginAnchor(selloffOriginBarIndex, selloffOriginScore, bearBarIndex, bearScore))
+            {
+                selloffOriginBarIndex = bearBarIndex;
+                selloffOriginPrice = bearPrice;
+                selloffOriginScore = bearScore;
+
+                if (EnableAnchorLogging)
+                {
+                    PrintWithContext("ORIGIN_ANCHOR_SET side=SHORT timeCME=" + FormatCmeTime(nowCme) +
+                          " bar=" + bearBarIndex +
+                          " price=" + bearPrice.ToString("F2") +
+                          " score=" + bearScore.ToString("F2"));
+                }
+            }
+        }
+
+        private static bool ShouldReplaceImpulseOriginAnchor(
+            int currentBarIndex,
+            double currentScore,
+            int candidateBarIndex,
+            double candidateScore)
+        {
+            if (candidateBarIndex < 0 || candidateScore <= 0)
+                return false;
+
+            if (currentBarIndex < 0)
+                return true;
+
+            if (candidateBarIndex <= currentBarIndex)
+                return false;
+
+            return candidateScore >= currentScore;
         }
 
         private void InitializeTimeZones()
@@ -1380,10 +1783,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 shortAnchorUsable);
             string nextLongText = FormatNextAnchorHint(true, longAnchorBar, longAnchor);
             string nextShortText = FormatNextAnchorHint(false, shortAnchorBar, shortAnchor);
+            double wtdAvwapNow = GetWtdAvwap();
+            string wtdText = (!double.IsNaN(wtdAvwapNow) && wtdAnchorBarIndex >= 0)
+                ? "bar=" + wtdAnchorBarIndex + " @" + wtdAvwapNow.ToString("F2") +
+                  " choppy=" + IsAnchorDegraded(wtdAvwapNow)
+                : "NA";
+
             string stateKey = longKind + "|" + longAnchorBar + "|" + longAnchorUsable + "|" + longAnchorChoppy +
                               "|" + shortKind + "|" + shortAnchorBar + "|" + shortAnchorUsable + "|" + shortAnchorChoppy +
                               "|" + structuralOverrideActive + "|" + structuralOverrideKind + "|" + structuralOverrideBarIndex +
-                              "|" + lodInvalidated + "|" + hodInvalidated;
+                              "|" + lodInvalidated + "|" + hodInvalidated +
+                              "|" + wtdAnchorBarIndex + "|" + wtdAvwapNow.ToString("F2");
 
             if (EnableAnchorLogging && !string.Equals(lastAnchorStateKey, stateKey, StringComparison.Ordinal))
             {
@@ -1396,6 +1806,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                       " override=" + (structuralOverrideActive
                           ? structuralOverrideKind + " bar=" + structuralOverrideBarIndex
                           : "None") +
+                      " wtd=" + wtdText +
                       " lodInvalidated=" + lodInvalidated +
                       " hodInvalidated=" + hodInvalidated);
                 lastAnchorStateKey = stateKey;
@@ -1419,6 +1830,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 "CME " + FormatCmeTime(nowCme) + "\n" +
                 "Long: " + longText + "\n" +
                 "Short: " + shortText + "\n" +
+                "WTD AVWAP: " + wtdText + "\n" +
                 "Current Relevant Anchor: " + currentRelevantAnchorText + "\n" +
                 "Next Long Anchor: " + nextLongText + "\n" +
                 "Next Short Anchor: " + nextShortText + "\n" +
@@ -1750,6 +2162,24 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Use Session ATR For Stops", GroupName = "Risk", Order = 32)]
         public bool UseSessionAtrForStops { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.00, 0.90)]
+        [Display(Name = "Max Stop Compression Fraction", GroupName = "Risk", Order = 33)]
+        public double MaxStopCompressionFraction { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 20)]
+        [Display(Name = "Min Override Active Bars", GroupName = "Anchors", Order = 34)]
+        public int MinOverrideActiveBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable WTD Anchor (Sun 17:00 CT)", GroupName = "Anchors", Order = 35)]
+        public bool EnableWtdAnchor { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Impulse Origin Anchors", GroupName = "Anchors", Order = 36)]
+        public bool EnableImpulseOriginAnchors { get; set; }
 
         #endregion
     }
