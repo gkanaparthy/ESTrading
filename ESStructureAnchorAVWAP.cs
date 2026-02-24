@@ -41,6 +41,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const string LongAnchorLabelTag = "ESStructureAnchorAVWAP.LongAnchorLabel";
         private const string ShortAnchorMarkerTag = "ESStructureAnchorAVWAP.ShortAnchorMarker";
         private const string ShortAnchorLabelTag = "ESStructureAnchorAVWAP.ShortAnchorLabel";
+        private const string RallyOriginMarkerTag = "ESStructureAnchorAVWAP.RallyOriginMarker";
+        private const string RallyOriginLabelTag = "ESStructureAnchorAVWAP.RallyOriginLabel";
+        private const string SelloffOriginMarkerTag = "ESStructureAnchorAVWAP.SelloffOriginMarker";
+        private const string SelloffOriginLabelTag = "ESStructureAnchorAVWAP.SelloffOriginLabel";
 
         private ATR atr;
         private EMA ema;
@@ -172,6 +176,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 OverrideCooldownBars = 20;
                 MinOverrideActiveBars = 3;
                 GapThresholdPoints = 8.0;
+                UseTradeTimeWindows = true;
 
                 AdxChopThreshold = 18;
                 ExtremeAtrThreshold = 12.0;
@@ -346,10 +351,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             double rawStop = Math.Max(AtrStopMultiple * stopAtr, MinStopTicks * TickSize);
             int baseStopTicks = Math.Max(MinStopTicks, (int)Math.Ceiling(rawStop / TickSize));
 
-            if (adx[0] < AdxChopThreshold && (longAnchorChoppy || shortAnchorChoppy))
-                return;
+            bool lowAdxRegime = adx[0] < AdxChopThreshold;
+            bool longChopBlockedByRegime = lowAdxRegime && longAnchorChoppy;
+            bool shortChopBlockedByRegime = lowAdxRegime && shortAnchorChoppy;
 
             bool longSignal = longAnchorUsable &&
+                              !longChopBlockedByRegime &&
                               HasReclaimAbove(longAnchor, ReclaimLookbackBars) &&
                               Low[0] <= longAnchor + zone &&
                               Close[0] > Open[0];
@@ -362,6 +369,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             bool shortSignal = shortAnchorSignalEligible &&
                                shortAnchorUsable &&
+                               !shortChopBlockedByRegime &&
                                HasRejectBelow(shortAnchor, ReclaimLookbackBars) &&
                                High[0] >= shortAnchor - zone &&
                                Close[0] < Open[0];
@@ -373,6 +381,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // Long sub-conditions (broken out individually)
                 bool lUsable   = longAnchorUsable;
+                bool lAdxChop  = longChopBlockedByRegime;
                 bool lReclaim  = !double.IsNaN(longAnchor) && HasReclaimAbove(longAnchor, ReclaimLookbackBars);
                 bool lZone     = !double.IsNaN(longAnchor) && Low[0] <= longAnchor + zone;
                 bool lCandle   = Close[0] > Open[0];
@@ -380,6 +389,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Short sub-conditions (broken out individually)
                 bool sEligible = shortAnchorSignalEligible;
                 bool sUsable   = shortAnchorUsable;
+                bool sAdxChop  = shortChopBlockedByRegime;
                 bool sReject   = !double.IsNaN(shortAnchor) && HasRejectBelow(shortAnchor, ReclaimLookbackBars);
                 bool sZone     = !double.IsNaN(shortAnchor) && High[0] >= shortAnchor - zone;
                 bool sCandle   = Close[0] < Open[0];
@@ -391,6 +401,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                       " lod=" + lodStr + " hod=" + hodStr + " wtd=" + wtdStr +
                       " trend=" + (bullishTrend ? "BULL" : "BEAR") +
                       " | LONG: usable=" + lUsable +
+                      " adxChopBlock=" + lAdxChop +
                       " reclaim=" + lReclaim +
                       " zone=" + lZone +
                       " candle=" + lCandle +
@@ -398,6 +409,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                       " =>" + longSignal +
                       " | SHORT: eligible=" + sEligible +
                       " usable=" + sUsable +
+                      " adxChopBlock=" + sAdxChop +
                       " reject=" + sReject +
                       " zone=" + sZone +
                       " candle=" + sCandle +
@@ -406,7 +418,30 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             if (longSignal && shortSignal)
-                return;
+            {
+                double longDistance = Math.Abs(Close[0] - longAnchor);
+                double shortDistance = Math.Abs(Close[0] - shortAnchor);
+
+                // Resolve conflicts deterministically so we always keep one candidate signal.
+                // Prefer trend-aligned side first; otherwise prefer the farther anchor as requested.
+                bool keepLong;
+                if (bullishTrend && !bearishTrend)
+                    keepLong = true;
+                else if (bearishTrend && !bullishTrend)
+                    keepLong = false;
+                else
+                    keepLong = longDistance >= shortDistance;
+
+                longSignal = keepLong;
+                shortSignal = !keepLong;
+
+                if (EnableAnchorLogging)
+                {
+                    PrintWithContext("DUAL_SIGNAL_RESOLVED chosen=" + (keepLong ? "LONG" : "SHORT") +
+                          " longDistance=" + longDistance.ToString("F2") +
+                          " shortDistance=" + shortDistance.ToString("F2"));
+                }
+            }
 
             if (longSignal && bullishTrend)
             {
@@ -924,6 +959,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool IsInTradeWindow(int time)
         {
+            if (!UseTradeTimeWindows)
+                return true;
+
             bool morning = time >= CmeMorningWindowStart && time <= CmeMorningWindowEnd;
             bool afternoon = time >= CmeAfternoonWindowStart && time <= CmeAfternoonWindowEnd;
             return morning || afternoon;
@@ -1460,8 +1498,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 if (!breakevenMoved && High[0] >= entry + riskPoints)
                 {
-                    SetStopLoss(activeSignal, CalculationMode.Price, entry, false);
-                    breakevenMoved = true;
+                    // OnBarClose can see a bar that touched 1R intrabar but closed back through entry.
+                    // Only submit BE stop updates when the stop remains valid relative to market.
+                    if (Close[0] > entry)
+                    {
+                        SetStopLoss(activeSignal, CalculationMode.Price, entry, false);
+                        breakevenMoved = true;
+                    }
+                    else if (EnableAnchorLogging)
+                    {
+                        PrintWithContext("SKIP_BREAKEVEN_INVALID side=LONG entry=" + entry.ToString("F2") +
+                              " close=" + Close[0].ToString("F2") +
+                              " reason=StopWouldBeAboveOrAtMarket");
+                    }
                 }
             }
             else if (Position.MarketPosition == MarketPosition.Short)
@@ -1473,8 +1522,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 if (!breakevenMoved && Low[0] <= entry - riskPoints)
                 {
-                    SetStopLoss(activeSignal, CalculationMode.Price, entry, false);
-                    breakevenMoved = true;
+                    // OnBarClose can see a bar that touched 1R intrabar but closed back through entry.
+                    // Only submit BE stop updates when the stop remains valid relative to market.
+                    if (Close[0] < entry)
+                    {
+                        SetStopLoss(activeSignal, CalculationMode.Price, entry, false);
+                        breakevenMoved = true;
+                    }
+                    else if (EnableAnchorLogging)
+                    {
+                        PrintWithContext("SKIP_BREAKEVEN_INVALID side=SHORT entry=" + entry.ToString("F2") +
+                              " close=" + Close[0].ToString("F2") +
+                              " reason=StopWouldBeBelowOrAtMarket");
+                    }
                 }
             }
         }
@@ -1532,13 +1592,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!EnableImpulseOriginAnchors || !allowAnchorRefresh)
                 return;
 
-            AnchorKind ignoredKind;
-
-            if (TryFindStructuralAnchor(
+            if (TryFindImpulseOriginAnchor(
                     true,
                     out double bullPrice,
                     out int bullBarIndex,
-                    out ignoredKind,
                     out double bullScore) &&
                 ShouldReplaceImpulseOriginAnchor(rallyOriginBarIndex, rallyOriginScore, bullBarIndex, bullScore))
             {
@@ -1555,11 +1612,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
-            if (TryFindStructuralAnchor(
+            if (TryFindImpulseOriginAnchor(
                     false,
                     out double bearPrice,
                     out int bearBarIndex,
-                    out ignoredKind,
                     out double bearScore) &&
                 ShouldReplaceImpulseOriginAnchor(selloffOriginBarIndex, selloffOriginScore, bearBarIndex, bearScore))
             {
@@ -1577,7 +1633,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        private static bool ShouldReplaceImpulseOriginAnchor(
+        private bool ShouldReplaceImpulseOriginAnchor(
             int currentBarIndex,
             double currentScore,
             int candidateBarIndex,
@@ -1589,10 +1645,76 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (currentBarIndex < 0)
                 return true;
 
-            if (candidateBarIndex <= currentBarIndex)
+            if (candidateBarIndex > currentBarIndex)
+                return candidateScore >= currentScore;
+
+            if (candidateBarIndex == currentBarIndex)
+                return candidateScore >= currentScore;
+
+            // Allow controlled back-correction to an older origin when quality is comparable.
+            // This lets the marker move from a later sub-leg to the true start of the selloff/rally.
+            const double backCorrectionRetention = 0.90;
+            return candidateScore >= currentScore * backCorrectionRetention;
+        }
+
+        private bool TryFindImpulseOriginAnchor(
+            bool bullish,
+            out double anchorPrice,
+            out int anchorBarIndex,
+            out double score)
+        {
+            anchorPrice = 0;
+            anchorBarIndex = -1;
+            score = 0;
+
+            int maxLookback = Math.Min(StructureLookbackBars, CurrentBar - 2);
+            if (maxLookback < ImpulseBars + 2)
                 return false;
 
-            return candidateScore >= currentScore;
+            double bestScore = double.MinValue;
+            double bestPrice = 0;
+            int bestBarIndex = -1;
+
+            // Pass 1: find highest-quality qualifying impulse window.
+            for (int i = maxLookback; i >= ImpulseBars; i--)
+            {
+                if (!TryGetImpulseCandidate(bullish, i, out double candidate, out int candidateIdx, out double candidateScore))
+                    continue;
+
+                if (candidateScore <= bestScore)
+                    continue;
+
+                bestScore = candidateScore;
+                bestPrice = candidate;
+                bestBarIndex = candidateIdx;
+            }
+
+            if (bestBarIndex < 0 || bestScore <= 0)
+                return false;
+
+            // Pass 2: prefer the earliest (oldest) candidate that is still comparable in quality.
+            // This biases origin anchors toward the beginning of the impulse leg rather than a later sub-leg.
+            const double originScoreRetention = 0.85;
+            double minComparableScore = bestScore * originScoreRetention;
+
+            for (int i = maxLookback; i >= ImpulseBars; i--)
+            {
+                if (!TryGetImpulseCandidate(bullish, i, out double candidate, out int candidateIdx, out double candidateScore))
+                    continue;
+
+                if (candidateScore + 1e-9 < minComparableScore)
+                    continue;
+
+                anchorPrice = candidate;
+                anchorBarIndex = candidateIdx;
+                score = candidateScore;
+                return true;
+            }
+
+            anchorPrice = bestPrice;
+            anchorBarIndex = bestBarIndex;
+            score = bestScore;
+            return true;
         }
 
         private void InitializeTimeZones()
@@ -1653,41 +1775,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             for (int i = maxLookback; i >= ImpulseBars; i--)
             {
-                int end = i - ImpulseBars + 1;
-                if (end < 0)
+                if (!TryGetImpulseCandidate(bullish, i, out double candidate, out int candidateIdx, out double candidateScore))
                     continue;
-
-                double atrRef = Math.Max(TickSize, atr[i]);
-                double netMove = bullish ? (Close[end] - Close[i]) : (Close[i] - Close[end]);
-                if (netMove < StructureDisplacementAtr * atrRef)
-                    continue;
-
-                int directionalBars = 0;
-                double volSum = 0;
-                for (int j = i; j >= end; j--)
-                {
-                    if (bullish && Close[j] > Open[j])
-                        directionalBars++;
-                    if (!bullish && Close[j] < Open[j])
-                        directionalBars++;
-                    volSum += Volume[j];
-                }
-
-                if (directionalBars < (int)Math.Ceiling(0.7 * ImpulseBars))
-                    continue;
-
-                double avgVol = volSum / ImpulseBars;
-                double baselineVol = volSma[i];
-                if (double.IsNaN(baselineVol) || baselineVol <= 0)
-                    continue;
-
-                if (avgVol < StructureVolumeMultiple * baselineVol)
-                    continue;
-
-                double candidate = bullish ? Low[i] : High[i];
-                int candidateIdx = CurrentBar - i;
-                double candidateAvwap = GetAvwapFromBar(candidateIdx, candidate);
-                double candidateScore = (netMove / atrRef) + EvaluateAnchorScore(candidateAvwap);
 
                 if (candidateScore <= score)
                     continue;
@@ -1698,6 +1787,55 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             return score > 0 && anchorBarIndex >= 0;
+        }
+
+        private bool TryGetImpulseCandidate(
+            bool bullish,
+            int startBarsAgo,
+            out double candidatePrice,
+            out int candidateBarIndex,
+            out double candidateScore)
+        {
+            candidatePrice = 0;
+            candidateBarIndex = -1;
+            candidateScore = 0;
+
+            int end = startBarsAgo - ImpulseBars + 1;
+            if (end < 0)
+                return false;
+
+            double atrRef = Math.Max(TickSize, atr[startBarsAgo]);
+            double netMove = bullish ? (Close[end] - Close[startBarsAgo]) : (Close[startBarsAgo] - Close[end]);
+            if (netMove < StructureDisplacementAtr * atrRef)
+                return false;
+
+            int directionalBars = 0;
+            double volSum = 0;
+            for (int j = startBarsAgo; j >= end; j--)
+            {
+                if (bullish && Close[j] > Open[j])
+                    directionalBars++;
+                if (!bullish && Close[j] < Open[j])
+                    directionalBars++;
+                volSum += Volume[j];
+            }
+
+            if (directionalBars < (int)Math.Ceiling(0.7 * ImpulseBars))
+                return false;
+
+            double avgVol = volSum / ImpulseBars;
+            double baselineVol = volSma[startBarsAgo];
+            if (double.IsNaN(baselineVol) || baselineVol <= 0)
+                return false;
+
+            if (avgVol < StructureVolumeMultiple * baselineVol)
+                return false;
+
+            candidatePrice = bullish ? Low[startBarsAgo] : High[startBarsAgo];
+            candidateBarIndex = CurrentBar - startBarsAgo;
+            double candidateAvwap = GetAvwapFromBar(candidateBarIndex, candidatePrice);
+            candidateScore = (netMove / atrRef) + EvaluateAnchorScore(candidateAvwap);
+            return true;
         }
 
         private double GetStructuralAvwapOrPrice()
@@ -1822,6 +1960,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RemoveDrawObject(LongAnchorLabelTag);
                 RemoveDrawObject(ShortAnchorMarkerTag);
                 RemoveDrawObject(ShortAnchorLabelTag);
+                RemoveDrawObject(RallyOriginMarkerTag);
+                RemoveDrawObject(RallyOriginLabelTag);
+                RemoveDrawObject(SelloffOriginMarkerTag);
+                RemoveDrawObject(SelloffOriginLabelTag);
                 return;
             }
 
@@ -1844,6 +1986,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Draw.TextFixed(this, AnchorStatusDrawTag, chartText, TextPosition.BottomLeft);
             DrawAnchorOriginMarkers(longKind, longAnchor, longAnchorBar, shortKind, shortAnchor, shortAnchorBar);
+            DrawImpulseOriginMarker(
+                RallyOriginMarkerTag,
+                RallyOriginLabelTag,
+                rallyOriginBarIndex,
+                rallyOriginPrice,
+                "RallyOrigin",
+                Brushes.LawnGreen);
+            DrawImpulseOriginMarker(
+                SelloffOriginMarkerTag,
+                SelloffOriginLabelTag,
+                selloffOriginBarIndex,
+                selloffOriginPrice,
+                "SelloffOrigin",
+                Brushes.OrangeRed);
         }
 
         private static string FormatCmeTime(int cmeTime)
@@ -1935,6 +2091,32 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Draw.Dot(this, markerTag, false, barsAgo, anchorPrice, isLong ? Brushes.LimeGreen : Brushes.OrangeRed);
             Draw.Text(this, labelTag, label, barsAgo, anchorPrice, Brushes.White);
+        }
+
+        private void DrawImpulseOriginMarker(
+            string markerTag,
+            string labelTag,
+            int originBarIndex,
+            double originPrice,
+            string labelPrefix,
+            Brush markerBrush)
+        {
+            if (originBarIndex < 0 || originBarIndex > CurrentBar || originPrice <= 0)
+            {
+                RemoveDrawObject(markerTag);
+                RemoveDrawObject(labelTag);
+                return;
+            }
+
+            int barsAgo = CurrentBar - originBarIndex;
+            if (barsAgo < 0)
+                return;
+
+            string originCme = GetAnchorOriginCmeText(originBarIndex);
+            string label = labelPrefix + " " + originCme + " CME";
+
+            Draw.Dot(this, markerTag, false, barsAgo, originPrice, markerBrush);
+            Draw.Text(this, labelTag, label, barsAgo, originPrice, Brushes.White);
         }
 
         private string GetAnchorTimeText(int anchorBarIndex)
@@ -2098,87 +2280,91 @@ namespace NinjaTrader.NinjaScript.Strategies
         public double GapThresholdPoints { get; set; }
 
         [NinjaScriptProperty]
+        [Display(Name = "Use Trade Time Windows", GroupName = "Session", Order = 19)]
+        public bool UseTradeTimeWindows { get; set; }
+
+        [NinjaScriptProperty]
         [Range(5, 40)]
-        [Display(Name = "ADX Chop Threshold", GroupName = "Regime", Order = 19)]
+        [Display(Name = "ADX Chop Threshold", GroupName = "Regime", Order = 20)]
         public int AdxChopThreshold { get; set; }
 
         [NinjaScriptProperty]
         [Range(2.0, 40.0)]
-        [Display(Name = "Extreme ATR Threshold", GroupName = "Regime", Order = 20)]
+        [Display(Name = "Extreme ATR Threshold", GroupName = "Regime", Order = 21)]
         public double ExtremeAtrThreshold { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.1, 10.0)]
-        [Display(Name = "Min ATR For Entry", GroupName = "Regime", Order = 21)]
+        [Display(Name = "Min ATR For Entry", GroupName = "Regime", Order = 22)]
         public double MinAtrForEntry { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 10)]
-        [Display(Name = "Trend Slope Bars", GroupName = "Regime", Order = 22)]
+        [Display(Name = "Trend Slope Bars", GroupName = "Regime", Order = 23)]
         public int TrendSlopeBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 5)]
-        [Display(Name = "Reclaim Lookback Bars", GroupName = "Entry", Order = 23)]
+        [Display(Name = "Reclaim Lookback Bars", GroupName = "Entry", Order = 24)]
         public int ReclaimLookbackBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(1.0, 4.0)]
-        [Display(Name = "Defended Low Impulse ATR", GroupName = "Anchors", Order = 24)]
+        [Display(Name = "Defended Low Impulse ATR", GroupName = "Anchors", Order = 25)]
         public double DefendedLowImpulseAtr { get; set; }
 
         [NinjaScriptProperty]
         [Range(3, 20)]
-        [Display(Name = "Defended Low Max Bars", GroupName = "Anchors", Order = 25)]
+        [Display(Name = "Defended Low Max Bars", GroupName = "Anchors", Order = 26)]
         public int DefendedLowMaxBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(5, 20)]
-        [Display(Name = "Rolling Expectancy Trades", GroupName = "Risk", Order = 26)]
+        [Display(Name = "Rolling Expectancy Trades", GroupName = "Risk", Order = 27)]
         public int RollingExpectancyTrades { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 5)]
-        [Display(Name = "Invalidation Follow-Through Bars", GroupName = "Anchors", Order = 27)]
+        [Display(Name = "Invalidation Follow-Through Bars", GroupName = "Anchors", Order = 28)]
         public int InvalidationFollowThroughBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 10)]
-        [Display(Name = "Min Anchor Age Bars", GroupName = "Entry", Order = 28)]
+        [Display(Name = "Min Anchor Age Bars", GroupName = "Entry", Order = 29)]
         public int MinAnchorAgeBars { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Anchor Logging", GroupName = "Diagnostics", Order = 29)]
+        [Display(Name = "Enable Anchor Logging", GroupName = "Diagnostics", Order = 30)]
         public bool EnableAnchorLogging { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Anchor Status On Chart", GroupName = "Diagnostics", Order = 30)]
+        [Display(Name = "Show Anchor Status On Chart", GroupName = "Diagnostics", Order = 31)]
         public bool ShowAnchorStatusOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Allow Risk Cap Stop Compression", GroupName = "Risk", Order = 31)]
+        [Display(Name = "Allow Risk Cap Stop Compression", GroupName = "Risk", Order = 32)]
         public bool AllowRiskCapStopCompression { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Use Session ATR For Stops", GroupName = "Risk", Order = 32)]
+        [Display(Name = "Use Session ATR For Stops", GroupName = "Risk", Order = 33)]
         public bool UseSessionAtrForStops { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.00, 0.90)]
-        [Display(Name = "Max Stop Compression Fraction", GroupName = "Risk", Order = 33)]
+        [Display(Name = "Max Stop Compression Fraction", GroupName = "Risk", Order = 34)]
         public double MaxStopCompressionFraction { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 20)]
-        [Display(Name = "Min Override Active Bars", GroupName = "Anchors", Order = 34)]
+        [Display(Name = "Min Override Active Bars", GroupName = "Anchors", Order = 35)]
         public int MinOverrideActiveBars { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable WTD Anchor (Sun 17:00 CT)", GroupName = "Anchors", Order = 35)]
+        [Display(Name = "Enable WTD Anchor (Sun 17:00 CT)", GroupName = "Anchors", Order = 36)]
         public bool EnableWtdAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Impulse Origin Anchors", GroupName = "Anchors", Order = 36)]
+        [Display(Name = "Enable Impulse Origin Anchors", GroupName = "Anchors", Order = 37)]
         public bool EnableImpulseOriginAnchors { get; set; }
 
         #endregion
