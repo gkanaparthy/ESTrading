@@ -108,6 +108,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool tierBAttemptUsed;
         private string lastAnchorStateKey = string.Empty;
+        private string lastShortAnchorDecisionKey = string.Empty;
 
         // Persistent impulse-origin anchors (start candle of sharp directional move)
         private int rallyOriginBarIndex = -1;
@@ -343,8 +344,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             bool bullishTrend = ema[0] > ema[Math.Min(TrendSlopeBars, CurrentBar)] && Close[0] > ema[0];
             bool bearishTrend = ema[0] < ema[Math.Min(TrendSlopeBars, CurrentBar)] && Close[0] < ema[0];
-            if (!bullishTrend && !bearishTrend)
-                return;
+           // if (!bullishTrend && !bearishTrend)
+             //   return;
 
             double zone = AnchorZoneTicks * TickSize;
             double stopAtr = GetStopAtrValue();
@@ -443,7 +444,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
-            if (longSignal && bullishTrend)
+            if (longSignal )//&& bullishTrend)
             {
                 int quantity = DefaultQuantity;
                 bool isTierB = false;
@@ -516,7 +517,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 SubmitEntry(true, quantity, stopTicks, targetTicks, isTierB);
             }
-            else if (shortSignal && bearishTrend)
+            else if (shortSignal )//&& bearishTrend)
             {
                 int quantity = DefaultQuantity;
                 bool isTierB = false;
@@ -761,6 +762,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             isGapDay = false;
             lastAnchorStateKey = string.Empty;
+            lastShortAnchorDecisionKey = string.Empty;
             sessionTrueRangeWindow.Clear();
             sessionTrueRangeSum = 0;
             sessionAtrForStops = 0;
@@ -1210,52 +1212,83 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return GetAvwapFromBar(structuralOverrideBarIndex, structuralOverridePrice);
             }
 
-            // Impulse-origin short anchor: start candle of a sharp selloff.
-            // Promote when HOD is invalidated/degraded and price is holding below the origin AVWAP.
+            double selloffAvwap = double.NaN;
+            bool selloffCandidateValid = false;
             if (EnableImpulseOriginAnchors && selloffOriginBarIndex >= 0)
             {
-                double selloffAvwap = GetAvwapFromBar(selloffOriginBarIndex, selloffOriginPrice);
-                if (!double.IsNaN(selloffAvwap) && Close[0] < selloffAvwap && !IsAnchorDegraded(selloffAvwap))
-                {
-                    double hodAvwap = hodInvalidated ? double.NaN : GetAvwapFromBar(dayHighBarIndex, dayHigh);
-                    bool hodDegradedOrGone = hodInvalidated || (!double.IsNaN(hodAvwap) && IsAnchorDegraded(hodAvwap));
-                    if (hodDegradedOrGone)
-                    {
-                        kind = AnchorKind.SelloffOrigin;
-                        anchorBarIndex = selloffOriginBarIndex;
-                        return selloffAvwap;
-                    }
-                }
+                selloffAvwap = GetAvwapFromBar(selloffOriginBarIndex, selloffOriginPrice);
+                selloffCandidateValid =
+                    !double.IsNaN(selloffAvwap) &&
+                    Close[0] < selloffAvwap &&
+                    !IsAnchorDegraded(selloffAvwap);
             }
 
-            // WTD anchor as short resistance: eligible when HOD is invalidated OR degraded,
-            // price is below WTD AVWAP, and WTD AVWAP is not itself degraded.
+            double hodAvwap = hodInvalidated ? double.NaN : GetAvwapFromBar(dayHighBarIndex, dayHigh);
+            bool hodCandidateValid = !hodInvalidated && !double.IsNaN(hodAvwap);
+
+            double wtdAvwap = double.NaN;
+            bool wtdCandidateValid = false;
             if (EnableWtdAnchor && wtdAnchorSet && wtdAnchorBarIndex >= 0)
             {
-                double wtd = GetWtdAvwap();
-                if (!double.IsNaN(wtd) && Close[0] < wtd && !IsAnchorDegraded(wtd))
+                wtdAvwap = GetWtdAvwap();
+                wtdCandidateValid =
+                    !double.IsNaN(wtdAvwap) &&
+                    Close[0] < wtdAvwap &&
+                    !IsAnchorDegraded(wtdAvwap);
+            }
+
+            // Requested policy:
+            //   SelloffOrigin > HOD > WTD
+            // If a higher-priority anchor is invalid/unusable, fall through to the next.
+            kind = AnchorKind.HOD;
+            anchorBarIndex = -1;
+            double selectedAnchor = double.NaN;
+
+            if (selloffCandidateValid)
+            {
+                kind = AnchorKind.SelloffOrigin;
+                anchorBarIndex = selloffOriginBarIndex;
+                selectedAnchor = selloffAvwap;
+            }
+            else if (hodCandidateValid)
+            {
+                kind = AnchorKind.HOD;
+                anchorBarIndex = dayHighBarIndex;
+                selectedAnchor = hodAvwap;
+            }
+            else if (wtdCandidateValid)
+            {
+                kind = AnchorKind.WeeklyOpen;
+                anchorBarIndex = wtdAnchorBarIndex;
+                selectedAnchor = wtdAvwap;
+            }
+
+            if (EnableAnchorLogging)
+            {
+                string selloffText = double.IsNaN(selloffAvwap) ? "NA" : selloffAvwap.ToString("F2");
+                string hodText = double.IsNaN(hodAvwap) ? "NA" : hodAvwap.ToString("F2");
+                string wtdText = double.IsNaN(wtdAvwap) ? "NA" : wtdAvwap.ToString("F2");
+                string selectedText = double.IsNaN(selectedAnchor) ? "NA" : selectedAnchor.ToString("F2");
+                string selectedKindText = double.IsNaN(selectedAnchor) ? "None" : kind.ToString();
+
+                string decisionKey =
+                    Time[0].Ticks + "|" +
+                    selloffCandidateValid + "|" + hodCandidateValid + "|" + wtdCandidateValid + "|" +
+                    selectedKindText + "|" + selectedText;
+
+                if (!string.Equals(lastShortAnchorDecisionKey, decisionKey, StringComparison.Ordinal))
                 {
-                    double hodAvwap = hodInvalidated ? double.NaN : GetAvwapFromBar(dayHighBarIndex, dayHigh);
-                    bool hodDegradedOrGone = hodInvalidated || (!double.IsNaN(hodAvwap) && IsAnchorDegraded(hodAvwap));
-                    if (hodDegradedOrGone)
-                    {
-                        kind = AnchorKind.WeeklyOpen;
-                        anchorBarIndex = wtdAnchorBarIndex;
-                        return wtd;
-                    }
+                    PrintWithContext("SHORT_ANCHOR_CANDIDATES" +
+                          " selloff=" + selloffText + " valid=" + selloffCandidateValid +
+                          " hod=" + hodText + " valid=" + hodCandidateValid + " invalidated=" + hodInvalidated +
+                          " wtd=" + wtdText + " valid=" + wtdCandidateValid +
+                          " selectedKind=" + selectedKindText +
+                          " selected=" + selectedText);
+                    lastShortAnchorDecisionKey = decisionKey;
                 }
             }
 
-            if (hodInvalidated)
-            {
-                kind = AnchorKind.HOD;
-                anchorBarIndex = -1;
-                return double.NaN;
-            }
-
-            kind = AnchorKind.HOD;
-            anchorBarIndex = dayHighBarIndex;
-            return GetAvwapFromBar(dayHighBarIndex, dayHigh);
+            return selectedAnchor;
         }
 
         private double GetAvwapFromBar(int anchorBarIndex, double fallbackPrice)
