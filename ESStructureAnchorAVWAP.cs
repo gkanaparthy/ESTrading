@@ -1303,6 +1303,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void RebuildManualAvwapAnchors()
         {
+            // Hide previously attached manual indicators when re-anchoring.
+            // (NT does not expose a straightforward remove for AddChartIndicator.)
+            if (manualLongAvwap2 != null && manualLongAvwap2.Plots != null && manualLongAvwap2.Plots.Count > 0)
+                manualLongAvwap2.Plots[0].Brush = Brushes.Transparent;
+            if (manualShortAvwap2 != null && manualShortAvwap2.Plots != null && manualShortAvwap2.Plots.Count > 0)
+                manualShortAvwap2.Plots[0].Brush = Brushes.Transparent;
+
             manualLongAvwap2 = null;
             manualShortAvwap2 = null;
 
@@ -1310,10 +1317,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
 
             if (ManualLongAnchorFrom > Core.Globals.MinDate)
+            {
                 manualLongAvwap2 = AVWAP2(BarsArray[0], ManualLongAnchorFrom, new VWAPDesign.StdDesign { Enabled = false, Num = 2 }, new VWAPDesign.StdDesign { Enabled = false, Num = 3 }, true, true, true);
+                if (manualLongAvwap2.Plots != null && manualLongAvwap2.Plots.Count > 0)
+                    manualLongAvwap2.Plots[0].Brush = Brushes.Lime;
+                AddChartIndicator(manualLongAvwap2);
+            }
 
             if (ManualShortAnchorFrom > Core.Globals.MinDate)
+            {
                 manualShortAvwap2 = AVWAP2(BarsArray[0], ManualShortAnchorFrom, new VWAPDesign.StdDesign { Enabled = false, Num = 2 }, new VWAPDesign.StdDesign { Enabled = false, Num = 3 }, true, true, true);
+                if (manualShortAvwap2.Plots != null && manualShortAvwap2.Plots.Count > 0)
+                    manualShortAvwap2.Plots[0].Brush = Brushes.Magenta;
+                AddChartIndicator(manualShortAvwap2);
+            }
         }
 
         private void EnsureManualAnchorHotkeysHooked()
