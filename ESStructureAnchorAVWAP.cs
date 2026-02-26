@@ -109,6 +109,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool tierBAttemptUsed;
         private string lastAnchorStateKey = string.Empty;
         private string lastShortAnchorDecisionKey = string.Empty;
+        private string lastMissedShortReasonKey = string.Empty;
 
         // Persistent impulse-origin anchors (start candle of sharp directional move)
         private int rallyOriginBarIndex = -1;
@@ -448,15 +449,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (!sCandle) reason += "noBearCandle;";
                     if (string.IsNullOrEmpty(reason)) reason = "unknownGate";
 
-                    PrintWithContext("MISSED_SHORT" +
-                          " kind=" + shortKind +
-                          " anchor=" + (double.IsNaN(shortAnchor) ? "NA" : shortAnchor.ToString("F2")) +
-                          " close=" + Close[0].ToString("F2") +
-                          " high=" + High[0].ToString("F2") +
-                          " low=" + Low[0].ToString("F2") +
-                          " reasons=" + reason +
-                          " reclaimLookback=" + ReclaimLookbackBars +
-                          " zoneTicks=" + dynamicZoneTicks);
+                    string missedKey =
+                        Time[0].Ticks + "|" + shortKind + "|" + reason + "|" +
+                        (double.IsNaN(shortAnchor) ? "NA" : shortAnchor.ToString("F2"));
+
+                    if (!string.Equals(lastMissedShortReasonKey, missedKey, StringComparison.Ordinal))
+                    {
+                        PrintWithContext("MISSED_SHORT" +
+                              " kind=" + shortKind +
+                              " anchor=" + (double.IsNaN(shortAnchor) ? "NA" : shortAnchor.ToString("F2")) +
+                              " close=" + Close[0].ToString("F2") +
+                              " high=" + High[0].ToString("F2") +
+                              " low=" + Low[0].ToString("F2") +
+                              " reasons=" + reason +
+                              " reclaimLookback=" + ReclaimLookbackBars +
+                              " zoneTicks=" + dynamicZoneTicks);
+
+                        lastMissedShortReasonKey = missedKey;
+                    }
                 }
             }
 
@@ -497,7 +507,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                     {
                         isTierB = true;
                         if (tierBAttemptUsed)
+                        {
+                            if (EnableAnchorLogging)
+                            {
+                                PrintWithContext("SKIP_TIERB_ALREADY_USED side=LONG" +
+                                      " anchorKind=" + longKind +
+                                      " anchor=" + longAnchor.ToString("F2"));
+                            }
                             return;
+                        }
 
                         quantity = Math.Max(1, (int)Math.Floor(DefaultQuantity * 0.5));
                     }
@@ -570,7 +588,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                     {
                         isTierB = true;
                         if (tierBAttemptUsed)
+                        {
+                            if (EnableAnchorLogging)
+                            {
+                                PrintWithContext("SKIP_TIERB_ALREADY_USED side=SHORT" +
+                                      " anchorKind=" + shortKind +
+                                      " anchor=" + shortAnchor.ToString("F2"));
+                            }
                             return;
+                        }
 
                         quantity = Math.Max(1, (int)Math.Floor(DefaultQuantity * 0.5));
                     }
@@ -805,6 +831,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             isGapDay = false;
             lastAnchorStateKey = string.Empty;
             lastShortAnchorDecisionKey = string.Empty;
+            lastMissedShortReasonKey = string.Empty;
             sessionTrueRangeWindow.Clear();
             sessionTrueRangeSum = 0;
             sessionAtrForStops = 0;
