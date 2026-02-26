@@ -1760,10 +1760,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (candidateBarIndex > currentBarIndex)
             {
-                // Prefer fresher origins so anchors can shift to the latest active impulse
-                // (e.g., from an early-session selloff to a new selloff that starts later).
-                const double newerAnchorRetention = 0.85;
-                return candidateScore >= currentScore * newerAnchorRetention;
+                if (bullish)
+                {
+                    // For rally origins, avoid rotating to newer sub-legs too aggressively.
+                    // Keep older rally origin unless newer candidate is clearly stronger.
+                    const double newerRallyUpgrade = 1.05;
+                    return candidateScore >= currentScore * newerRallyUpgrade;
+                }
+
+                // For selloff origins, prefer fresher impulses once quality is comparable.
+                const double newerSelloffRetention = 0.85;
+                return candidateScore >= currentScore * newerSelloffRetention;
             }
 
             if (candidateBarIndex == currentBarIndex)
@@ -1840,24 +1847,43 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (bestBarIndex < 0 || bestScore <= 0)
                 return false;
 
-            // Pass 2: prefer the most recent candidate that is still comparable in quality.
-            // This keeps origins aligned with the currently active impulse instead of getting stuck
-            // on an older high-score move from earlier in the session.
+            // Pass 2 selection is side-specific:
+            // - Bullish (rally): prefer earlier comparable origin to avoid late sub-leg anchors.
+            // - Bearish (selloff): prefer most recent comparable origin to stay aligned with active selloff.
             const double originScoreRetention = 0.85;
             double minComparableScore = bestScore * originScoreRetention;
 
-            for (int i = ImpulseBars; i <= maxLookback; i++)
+            if (bullish)
             {
-                if (!TryGetImpulseCandidate(bullish, i, out double candidate, out int candidateIdx, out double candidateScore))
-                    continue;
+                for (int i = maxLookback; i >= ImpulseBars; i--)
+                {
+                    if (!TryGetImpulseCandidate(bullish, i, out double candidate, out int candidateIdx, out double candidateScore))
+                        continue;
 
-                if (candidateScore + 1e-9 < minComparableScore)
-                    continue;
+                    if (candidateScore + 1e-9 < minComparableScore)
+                        continue;
 
-                anchorPrice = candidate;
-                anchorBarIndex = candidateIdx;
-                score = candidateScore;
-                return true;
+                    anchorPrice = candidate;
+                    anchorBarIndex = candidateIdx;
+                    score = candidateScore;
+                    return true;
+                }
+            }
+            else
+            {
+                for (int i = ImpulseBars; i <= maxLookback; i++)
+                {
+                    if (!TryGetImpulseCandidate(bullish, i, out double candidate, out int candidateIdx, out double candidateScore))
+                        continue;
+
+                    if (candidateScore + 1e-9 < minComparableScore)
+                        continue;
+
+                    anchorPrice = candidate;
+                    anchorBarIndex = candidateIdx;
+                    score = candidateScore;
+                    return true;
+                }
             }
 
             anchorPrice = bestPrice;
