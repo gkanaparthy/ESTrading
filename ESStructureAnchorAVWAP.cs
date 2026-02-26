@@ -22,7 +22,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             StructuralBear,
             RallyOrigin,
             SelloffOrigin,
-            WeeklyOpen
+            WeeklyOpen,
+            ManualLongAVWAP2,
+            ManualShortAVWAP2
         }
 
         private enum LodTier
@@ -54,6 +56,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private PriorDayOHLC priorDay;
         private TimeZoneInfo cmeTimeZone;
         private TimeZoneInfo barTimeZone;
+        private AVWAP2 manualLongAvwap2;
+        private AVWAP2 manualShortAvwap2;
 
         private DateTime sessionDate = Core.Globals.MinDate;
         private bool isGapDay;
@@ -194,6 +198,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ShowAnchorStatusOnChart = true;
                 EnableWtdAnchor = true;
                 EnableImpulseOriginAnchors = true;
+                UseManualAvwap2Anchors = false;
+                ManualLongAnchorFrom = Core.Globals.MinDate;
+                ManualShortAnchorFrom = Core.Globals.MinDate;
             }
             else if (State == State.DataLoaded)
             {
@@ -203,6 +210,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 adx = ADX(14);
                 priorDay = PriorDayOHLC();
                 InitializeTimeZones();
+
+                if (UseManualAvwap2Anchors)
+                {
+                    if (ManualLongAnchorFrom > Core.Globals.MinDate)
+                        manualLongAvwap2 = AVWAP2(BarsArray[0], ManualLongAnchorFrom, new VWAPDesign.StdDesign { Enabled = false, Num = 2 }, new VWAPDesign.StdDesign { Enabled = false, Num = 3 }, true, true, true);
+                    if (ManualShortAnchorFrom > Core.Globals.MinDate)
+                        manualShortAvwap2 = AVWAP2(BarsArray[0], ManualShortAnchorFrom, new VWAPDesign.StdDesign { Enabled = false, Num = 2 }, new VWAPDesign.StdDesign { Enabled = false, Num = 3 }, true, true, true);
+                }
 
                 dayHigh = double.MinValue;
                 dayLow = double.MaxValue;
@@ -1215,8 +1230,29 @@ namespace NinjaTrader.NinjaScript.Strategies
             return sum / recentTradeR.Count;
         }
 
+        private bool TryGetManualAnchorValue(bool isLong, out double value)
+        {
+            value = double.NaN;
+            if (!UseManualAvwap2Anchors)
+                return false;
+
+            AVWAP2 manual = isLong ? manualLongAvwap2 : manualShortAvwap2;
+            if (manual == null || manual.Output == null || manual.Output.Count < 1)
+                return false;
+
+            value = manual.Output[0];
+            return !double.IsNaN(value) && value > 0;
+        }
+
         private double GetLongAnchor(out AnchorKind kind, out int anchorBarIndex)
         {
+            if (TryGetManualAnchorValue(true, out double manualLong))
+            {
+                kind = AnchorKind.ManualLongAVWAP2;
+                anchorBarIndex = -1;
+                return manualLong;
+            }
+
             if (structuralOverrideActive && structuralOverrideKind == AnchorKind.StructuralBull)
             {
                 kind = AnchorKind.StructuralBull;
@@ -1268,6 +1304,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private double GetShortAnchor(out AnchorKind kind, out int anchorBarIndex)
         {
+            if (TryGetManualAnchorValue(false, out double manualShort))
+            {
+                kind = AnchorKind.ManualShortAVWAP2;
+                anchorBarIndex = -1;
+                return manualShort;
+            }
+
             if (structuralOverrideActive && structuralOverrideKind == AnchorKind.StructuralBear)
             {
                 kind = AnchorKind.StructuralBear;
@@ -2566,6 +2609,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Enable Impulse Origin Anchors", GroupName = "Anchors", Order = 37)]
         public bool EnableImpulseOriginAnchors { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Use Manual AVWAP2 Anchors", GroupName = "Anchors", Order = 38)]
+        public bool UseManualAvwap2Anchors { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Manual Long Anchor From", GroupName = "Anchors", Order = 39)]
+        public DateTime ManualLongAnchorFrom { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Manual Short Anchor From", GroupName = "Anchors", Order = 40)]
+        public DateTime ManualShortAnchorFrom { get; set; }
 
         #endregion
     }
