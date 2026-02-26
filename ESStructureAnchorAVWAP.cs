@@ -31,8 +31,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             TierB
         }
 
-        private const int CmeMorningWindowStart = 84500;
-        private const int CmeMorningWindowEnd = 100000;
+        // ES RTH (CME/CT): 08:30 - 15:00
+        private const int CmeMorningWindowStart = 83000;
+        private const int CmeMorningWindowEnd = 150000;
         private const int CmeAfternoonWindowStart = 120000;
         private const int CmeAfternoonWindowEnd = 150000;
         private const int CmeAnchorCutoffTime = 140000;
@@ -1033,9 +1034,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!UseTradeTimeWindows)
                 return true;
 
-            bool morning = time >= CmeMorningWindowStart && time <= CmeMorningWindowEnd;
-            bool afternoon = time >= CmeAfternoonWindowStart && time <= CmeAfternoonWindowEnd;
-            return morning || afternoon;
+            // Full RTH window
+            return time >= CmeMorningWindowStart && time <= CmeMorningWindowEnd;
         }
 
         // Anchors the WTD AVWAP once per week at the Sunday 17:00 CT bar.
