@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using NinjaTrader.Cbi;
@@ -67,6 +68,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool pendingSetManualLong;
         private bool pendingSetManualShort;
         private bool pendingClearManualAnchors;
+        private int pendingAnchorBarIndex = -1;
+        private int lastClickedBarIndex = -1;
 
         private DateTime sessionDate = Core.Globals.MinDate;
         private bool isGapDay;
@@ -1245,22 +1248,31 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool setLong;
             bool setShort;
             bool clear;
+            int anchorBarIndex;
 
             lock (manualAnchorLock)
             {
                 setLong = pendingSetManualLong;
                 setShort = pendingSetManualShort;
                 clear = pendingClearManualAnchors;
+                anchorBarIndex = pendingAnchorBarIndex;
 
                 pendingSetManualLong = false;
                 pendingSetManualShort = false;
                 pendingClearManualAnchors = false;
+                pendingAnchorBarIndex = -1;
             }
 
             if (!(setLong || setShort || clear))
                 return;
 
             DateTime anchorTime = Time[0];
+            if (!clear && anchorBarIndex >= 0 && anchorBarIndex <= CurrentBar)
+            {
+                int barsAgo = CurrentBar - anchorBarIndex;
+                if (barsAgo >= 0 && barsAgo < Time.Count)
+                    anchorTime = Time[barsAgo];
+            }
 
             if (clear)
             {
@@ -1325,10 +1337,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return;
 
                 chartWindow.PreviewKeyDown += OnManualAnchorHotkeyPressed;
+                chartWindow.PreviewMouseDown += OnManualAnchorMouseDown;
                 manualHotkeysHooked = true;
 
                 if (EnableAnchorLogging)
-                    PrintWithContext("MANUAL_ANCHOR_HOTKEYS_ENABLED keys=Q(long),A(short),C(clear)");
+                    PrintWithContext("MANUAL_ANCHOR_HOTKEYS_ENABLED mode=historical-click keys=Q(long),A(short),C(clear)");
             });
         }
 
@@ -1340,6 +1353,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             try
             {
                 chartWindow.PreviewKeyDown -= OnManualAnchorHotkeyPressed;
+                chartWindow.PreviewMouseDown -= OnManualAnchorMouseDown;
             }
             catch
             {
@@ -1350,6 +1364,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             chartWindow = null;
         }
 
+        private void OnManualAnchorMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (ChartControl == null || ChartBars == null)
+                return;
+
+            Point p = e.GetPosition(ChartControl);
+            int barIdx = ChartBars.GetBarIdxByX(ChartControl, (int)p.X);
+            if (barIdx >= 0)
+                lastClickedBarIndex = barIdx;
+        }
+
         private void OnManualAnchorHotkeyPressed(object sender, KeyEventArgs e)
         {
             if (!UseManualAvwap2Anchors)
@@ -1358,16 +1383,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool handled = false;
             lock (manualAnchorLock)
             {
-                if (e.Key == Key.Q)
+                if (e.Key == Key.Q && lastClickedBarIndex >= 0)
                 {
                     pendingSetManualLong = true;
                     pendingClearManualAnchors = false;
+                    pendingAnchorBarIndex = lastClickedBarIndex;
                     handled = true;
                 }
-                else if (e.Key == Key.A)
+                else if (e.Key == Key.A && lastClickedBarIndex >= 0)
                 {
                     pendingSetManualShort = true;
                     pendingClearManualAnchors = false;
+                    pendingAnchorBarIndex = lastClickedBarIndex;
                     handled = true;
                 }
                 else if (e.Key == Key.C)
@@ -1375,6 +1402,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     pendingClearManualAnchors = true;
                     pendingSetManualLong = false;
                     pendingSetManualShort = false;
+                    pendingAnchorBarIndex = -1;
                     handled = true;
                 }
             }
