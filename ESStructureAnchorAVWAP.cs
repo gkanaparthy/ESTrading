@@ -2007,8 +2007,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             // assuming the first bar in the window is the origin.
             int originBarsAgo = startBarsAgo;
             double originPrice = bullish ? Low[startBarsAgo] : High[startBarsAgo];
-            int windowStartBarsAgo = startBarsAgo;
-            int windowEndBarsAgo = end;
             for (int j = startBarsAgo; j >= end; j--)
             {
                 if (bullish)
@@ -2029,20 +2027,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
-            // For selloff origins, prefer snapping to HOD when the impulse starts from HOD area.
-            // This aligns with the intended behavior where opening selloffs should anchor at HOD.
-            if (!bullish && !hodInvalidated && dayHighBarIndex >= 0)
-            {
-                int hodBarsAgo = CurrentBar - dayHighBarIndex;
-                bool hodInsideWindow = hodBarsAgo >= windowEndBarsAgo && hodBarsAgo <= windowStartBarsAgo;
-                bool nearHod = Math.Abs(originPrice - dayHigh) <= (2 * TickSize);
-                if (hodInsideWindow && nearHod)
-                {
-                    originPrice = dayHigh;
-                    originBarsAgo = hodBarsAgo;
-                }
-            }
-
             // Guardrail: if the detected pivot is too late in the impulse window,
             // it's likely a sub-leg and not the true move origin.
             int originDelayBars = startBarsAgo - originBarsAgo;
@@ -2056,12 +2040,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             candidatePrice = originPrice;
             candidateBarIndex = CurrentBar - originBarsAgo;
-
-            // Rally origins should be post-selloff reversal anchors, not pre-selloff lows.
-            // If a selloff origin exists, only allow rally origins that start after it.
-            if (bullish && selloffOriginBarIndex >= 0 && candidateBarIndex <= selloffOriginBarIndex)
-                return false;
-
             double candidateAvwap = GetAvwapFromBar(candidateBarIndex, candidatePrice);
 
             // Favor larger/cleaner moves, but lightly penalize "late" origins.
