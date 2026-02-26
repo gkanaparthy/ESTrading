@@ -1907,9 +1907,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
 
             double atrRef = Math.Max(TickSize, atr[startBarsAgo]);
-            double netMove = bullish ? (Close[end] - Close[startBarsAgo]) : (Close[startBarsAgo] - Close[end]);
-            if (netMove < StructureDisplacementAtr * atrRef)
-                return false;
 
             int directionalBars = 0;
             double volSum = 0;
@@ -1933,10 +1930,48 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (avgVol < StructureVolumeMultiple * baselineVol)
                 return false;
 
-            candidatePrice = bullish ? Low[startBarsAgo] : High[startBarsAgo];
-            candidateBarIndex = CurrentBar - startBarsAgo;
+            // Find the true origin pivot inside the impulse window instead of always
+            // assuming the first bar in the window is the origin.
+            int originBarsAgo = startBarsAgo;
+            double originPrice = bullish ? Low[startBarsAgo] : High[startBarsAgo];
+            for (int j = startBarsAgo; j >= end; j--)
+            {
+                if (bullish)
+                {
+                    if (Low[j] < originPrice)
+                    {
+                        originPrice = Low[j];
+                        originBarsAgo = j;
+                    }
+                }
+                else
+                {
+                    if (High[j] > originPrice)
+                    {
+                        originPrice = High[j];
+                        originBarsAgo = j;
+                    }
+                }
+            }
+
+            // Guardrail: if the detected pivot is too late in the impulse window,
+            // it's likely a sub-leg and not the true move origin.
+            int originDelayBars = startBarsAgo - originBarsAgo;
+            int maxAllowedOriginDelay = Math.Max(1, ImpulseBars / 3);
+            if (originDelayBars > maxAllowedOriginDelay)
+                return false;
+
+            double netMove = bullish ? (Close[end] - originPrice) : (originPrice - Close[end]);
+            if (netMove < StructureDisplacementAtr * atrRef)
+                return false;
+
+            candidatePrice = originPrice;
+            candidateBarIndex = CurrentBar - originBarsAgo;
             double candidateAvwap = GetAvwapFromBar(candidateBarIndex, candidatePrice);
-            candidateScore = (netMove / atrRef) + EvaluateAnchorScore(candidateAvwap);
+
+            // Favor larger/cleaner moves, but lightly penalize "late" origins.
+            double timingPenalty = 0.25 * (originDelayBars / (double)Math.Max(1, ImpulseBars));
+            candidateScore = (netMove / atrRef) + EvaluateAnchorScore(candidateAvwap) - timingPenalty;
             return true;
         }
 
