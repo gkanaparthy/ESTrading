@@ -1748,7 +1748,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return true;
 
             if (candidateBarIndex > currentBarIndex)
-                return candidateScore >= currentScore;
+            {
+                // Prefer fresher origins so anchors can shift to the latest active impulse
+                // (e.g., from an early-session selloff to a new selloff that starts later).
+                const double newerAnchorRetention = 0.85;
+                return candidateScore >= currentScore * newerAnchorRetention;
+            }
 
             if (candidateBarIndex == currentBarIndex)
                 return candidateScore >= currentScore;
@@ -1794,12 +1799,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (bestBarIndex < 0 || bestScore <= 0)
                 return false;
 
-            // Pass 2: prefer the earliest (oldest) candidate that is still comparable in quality.
-            // This biases origin anchors toward the beginning of the impulse leg rather than a later sub-leg.
+            // Pass 2: prefer the most recent candidate that is still comparable in quality.
+            // This keeps origins aligned with the currently active impulse instead of getting stuck
+            // on an older high-score move from earlier in the session.
             const double originScoreRetention = 0.85;
             double minComparableScore = bestScore * originScoreRetention;
 
-            for (int i = maxLookback; i >= ImpulseBars; i--)
+            for (int i = ImpulseBars; i <= maxLookback; i++)
             {
                 if (!TryGetImpulseCandidate(bullish, i, out double candidate, out int candidateIdx, out double candidateScore))
                     continue;
