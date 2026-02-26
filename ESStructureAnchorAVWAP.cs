@@ -347,7 +347,12 @@ namespace NinjaTrader.NinjaScript.Strategies
            // if (!bullishTrend && !bearishTrend)
              //   return;
 
-            double zone = AnchorZoneTicks * TickSize;
+            // Adaptive zone sizing: keep baseline from AnchorZoneTicks but loosen slightly
+            // in higher ATR regimes to avoid missing valid wick/reject touches.
+            int dynamicZoneTicks = Math.Max(
+                AnchorZoneTicks,
+                Math.Min(8, (int)Math.Round((atr[0] / TickSize) * 0.15)));
+            double zone = dynamicZoneTicks * TickSize;
             double stopAtr = GetStopAtrValue();
             double rawStop = Math.Max(AtrStopMultiple * stopAtr, MinStopTicks * TickSize);
             int baseStopTicks = Math.Max(MinStopTicks, (int)Math.Ceiling(rawStop / TickSize));
@@ -356,9 +361,19 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool longChopBlockedByRegime = lowAdxRegime && longAnchorChoppy;
             bool shortChopBlockedByRegime = lowAdxRegime && shortAnchorChoppy;
 
+            bool longWickReclaim =
+                !double.IsNaN(longAnchor) &&
+                Low[0] <= longAnchor &&
+                Close[0] > longAnchor;
+
+            bool shortWickReject =
+                !double.IsNaN(shortAnchor) &&
+                High[0] >= shortAnchor &&
+                Close[0] < shortAnchor;
+
             bool longSignal = longAnchorUsable &&
                               !longChopBlockedByRegime &&
-                              HasReclaimAbove(longAnchor, ReclaimLookbackBars) &&
+                              (HasReclaimAbove(longAnchor, ReclaimLookbackBars) || longWickReclaim) &&
                               Low[0] <= longAnchor + zone &&
                               Close[0] > Open[0];
 
@@ -371,7 +386,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool shortSignal = shortAnchorSignalEligible &&
                                shortAnchorUsable &&
                                !shortChopBlockedByRegime &&
-                               HasRejectBelow(shortAnchor, ReclaimLookbackBars) &&
+                               (HasRejectBelow(shortAnchor, ReclaimLookbackBars) || shortWickReject) &&
                                High[0] >= shortAnchor - zone &&
                                Close[0] < Open[0];
 
@@ -384,6 +399,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 bool lUsable   = longAnchorUsable;
                 bool lAdxChop  = longChopBlockedByRegime;
                 bool lReclaim  = !double.IsNaN(longAnchor) && HasReclaimAbove(longAnchor, ReclaimLookbackBars);
+                bool lWick     = longWickReclaim;
                 bool lZone     = !double.IsNaN(longAnchor) && Low[0] <= longAnchor + zone;
                 bool lCandle   = Close[0] > Open[0];
 
@@ -392,6 +408,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 bool sUsable   = shortAnchorUsable;
                 bool sAdxChop  = shortChopBlockedByRegime;
                 bool sReject   = !double.IsNaN(shortAnchor) && HasRejectBelow(shortAnchor, ReclaimLookbackBars);
+                bool sWick     = shortWickReject;
                 bool sZone     = !double.IsNaN(shortAnchor) && High[0] >= shortAnchor - zone;
                 bool sCandle   = Close[0] < Open[0];
 
@@ -404,6 +421,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                       " | LONG: usable=" + lUsable +
                       " adxChopBlock=" + lAdxChop +
                       " reclaim=" + lReclaim +
+                      " wick=" + lWick +
                       " zone=" + lZone +
                       " candle=" + lCandle +
                       " trend=" + bullishTrend +
@@ -412,10 +430,34 @@ namespace NinjaTrader.NinjaScript.Strategies
                       " usable=" + sUsable +
                       " adxChopBlock=" + sAdxChop +
                       " reject=" + sReject +
+                      " wick=" + sWick +
                       " zone=" + sZone +
                       " candle=" + sCandle +
                       " trend=" + bearishTrend +
+                      " zoneTicks=" + dynamicZoneTicks +
                       " =>" + shortSignal);
+
+                // Phase 2 diagnostics: explicit missed-short reasons for real examples
+                if (shortAnchorSignalEligible && !shortSignal)
+                {
+                    string reason = "";
+                    if (!shortAnchorUsable) reason += "anchorNotUsable;";
+                    if (shortChopBlockedByRegime) reason += "adxChopBlocked;";
+                    if (!(sReject || sWick)) reason += "noRejectOrWick;";
+                    if (!sZone) reason += "noZoneTouch;";
+                    if (!sCandle) reason += "noBearCandle;";
+                    if (string.IsNullOrEmpty(reason)) reason = "unknownGate";
+
+                    PrintWithContext("MISSED_SHORT" +
+                          " kind=" + shortKind +
+                          " anchor=" + (double.IsNaN(shortAnchor) ? "NA" : shortAnchor.ToString("F2")) +
+                          " close=" + Close[0].ToString("F2") +
+                          " high=" + High[0].ToString("F2") +
+                          " low=" + Low[0].ToString("F2") +
+                          " reasons=" + reason +
+                          " reclaimLookback=" + ReclaimLookbackBars +
+                          " zoneTicks=" + dynamicZoneTicks);
+                }
             }
 
             if (longSignal && shortSignal)
@@ -454,7 +496,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (tier == LodTier.TierB)
                     {
                         isTierB = true;
-                        if (tierBAttemptUsed || DefaultQuantity < 2)
+                        if (tierBAttemptUsed)
                             return;
 
                         quantity = Math.Max(1, (int)Math.Floor(DefaultQuantity * 0.5));
@@ -527,7 +569,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (tier == LodTier.TierB)
                     {
                         isTierB = true;
-                        if (tierBAttemptUsed || DefaultQuantity < 2)
+                        if (tierBAttemptUsed)
                             return;
 
                         quantity = Math.Max(1, (int)Math.Floor(DefaultQuantity * 0.5));
