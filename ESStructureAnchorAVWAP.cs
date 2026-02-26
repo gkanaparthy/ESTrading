@@ -63,6 +63,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private AVWAP2 manualShortAvwap2;
         private bool manualHotkeysHooked;
         private Chart chartWindow;
+        private readonly object manualAnchorLock = new object();
+        private bool pendingSetManualLong;
+        private bool pendingSetManualShort;
+        private bool pendingClearManualAnchors;
 
         private DateTime sessionDate = Core.Globals.MinDate;
         private bool isGapDay;
@@ -251,6 +255,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
 
             EnsureManualAnchorHotkeysHooked();
+            ProcessPendingManualAnchorActions();
             ResetDailyStateIfNeeded();
             wtdSeededThisBar = false;
             UpdateWtdAnchorIfNeeded();         // resets and seeds accumulators on new week / cold start
@@ -1235,6 +1240,55 @@ namespace NinjaTrader.NinjaScript.Strategies
             return sum / recentTradeR.Count;
         }
 
+        private void ProcessPendingManualAnchorActions()
+        {
+            bool setLong;
+            bool setShort;
+            bool clear;
+
+            lock (manualAnchorLock)
+            {
+                setLong = pendingSetManualLong;
+                setShort = pendingSetManualShort;
+                clear = pendingClearManualAnchors;
+
+                pendingSetManualLong = false;
+                pendingSetManualShort = false;
+                pendingClearManualAnchors = false;
+            }
+
+            if (!(setLong || setShort || clear))
+                return;
+
+            DateTime anchorTime = Time[0];
+
+            if (clear)
+            {
+                ManualLongAnchorFrom = Core.Globals.MinDate;
+                ManualShortAnchorFrom = Core.Globals.MinDate;
+                if (EnableAnchorLogging)
+                    PrintWithContext("MANUAL_ANCHORS_CLEARED");
+            }
+            else
+            {
+                if (setLong)
+                {
+                    ManualLongAnchorFrom = anchorTime;
+                    if (EnableAnchorLogging)
+                        PrintWithContext("MANUAL_LONG_ANCHOR_SET timeCME=" + FormatCmeTime(GetCmeTimeInt(anchorTime)) + " anchorFrom=" + GetCmeTime(anchorTime).ToString("yyyy-MM-dd HH:mm:ss"));
+                }
+
+                if (setShort)
+                {
+                    ManualShortAnchorFrom = anchorTime;
+                    if (EnableAnchorLogging)
+                        PrintWithContext("MANUAL_SHORT_ANCHOR_SET timeCME=" + FormatCmeTime(GetCmeTimeInt(anchorTime)) + " anchorFrom=" + GetCmeTime(anchorTime).ToString("yyyy-MM-dd HH:mm:ss"));
+                }
+            }
+
+            RebuildManualAvwapAnchors();
+        }
+
         private void RebuildManualAvwapAnchors()
         {
             manualLongAvwap2 = null;
@@ -1252,7 +1306,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void EnsureManualAnchorHotkeysHooked()
         {
-            if (!UseManualAvwap2Anchors || !EnableManualAnchorHotkeys || manualHotkeysHooked || ChartControl == null)
+            if (!UseManualAvwap2Anchors || !EnableManualAnchorHotkeys)
+            {
+                UnhookManualAnchorHotkeys();
+                return;
+            }
+
+            if (manualHotkeysHooked || ChartControl == null)
                 return;
 
             ChartControl.Dispatcher.InvokeAsync(() =>
@@ -1292,40 +1352,35 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void OnManualAnchorHotkeyPressed(object sender, KeyEventArgs e)
         {
-            if (!UseManualAvwap2Anchors || CurrentBar < 0 || Time == null || Time.Count < 1)
+            if (!UseManualAvwap2Anchors)
                 return;
 
-            bool changed = false;
-            DateTime anchorTime = Time[0];
-
-            if (e.Key == Key.Q)
+            bool handled = false;
+            lock (manualAnchorLock)
             {
-                ManualLongAnchorFrom = anchorTime;
-                changed = true;
-                if (EnableAnchorLogging)
-                    PrintWithContext("MANUAL_LONG_ANCHOR_SET timeCME=" + FormatCmeTime(GetCmeTimeInt(anchorTime)) + " anchorFrom=" + GetCmeTime(anchorTime).ToString("yyyy-MM-dd HH:mm:ss"));
-            }
-            else if (e.Key == Key.A)
-            {
-                ManualShortAnchorFrom = anchorTime;
-                changed = true;
-                if (EnableAnchorLogging)
-                    PrintWithContext("MANUAL_SHORT_ANCHOR_SET timeCME=" + FormatCmeTime(GetCmeTimeInt(anchorTime)) + " anchorFrom=" + GetCmeTime(anchorTime).ToString("yyyy-MM-dd HH:mm:ss"));
-            }
-            else if (e.Key == Key.C)
-            {
-                ManualLongAnchorFrom = Core.Globals.MinDate;
-                ManualShortAnchorFrom = Core.Globals.MinDate;
-                changed = true;
-                if (EnableAnchorLogging)
-                    PrintWithContext("MANUAL_ANCHORS_CLEARED");
+                if (e.Key == Key.Q)
+                {
+                    pendingSetManualLong = true;
+                    pendingClearManualAnchors = false;
+                    handled = true;
+                }
+                else if (e.Key == Key.A)
+                {
+                    pendingSetManualShort = true;
+                    pendingClearManualAnchors = false;
+                    handled = true;
+                }
+                else if (e.Key == Key.C)
+                {
+                    pendingClearManualAnchors = true;
+                    pendingSetManualLong = false;
+                    pendingSetManualShort = false;
+                    handled = true;
+                }
             }
 
-            if (!changed)
-                return;
-
-            RebuildManualAvwapAnchors();
-            e.Handled = true;
+            if (handled)
+                e.Handled = true;
         }
 
         private bool TryGetManualAnchorValue(bool isLong, out double value)
@@ -2716,12 +2771,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 39)]
         public bool EnableManualAnchorHotkeys { get; set; }
 
-        [NinjaScriptProperty]
-        [Display(Name = "Manual Long Anchor From", GroupName = "Anchors", Order = 40)]
+        [Browsable(false)]
         public DateTime ManualLongAnchorFrom { get; set; }
 
-        [NinjaScriptProperty]
-        [Display(Name = "Manual Short Anchor From", GroupName = "Anchors", Order = 41)]
+        [Browsable(false)]
         public DateTime ManualShortAnchorFrom { get; set; }
 
         #endregion
