@@ -1224,8 +1224,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return GetAvwapFromBar(structuralOverrideBarIndex, structuralOverridePrice);
             }
 
-            // Impulse-origin long anchor: start candle of a sharp rally.
-            // Promote when LOD is invalidated/degraded and price is holding above the origin AVWAP.
+            // TEMP PRIORITY ORDER (requested): LOD -> RallyOrigin -> WTD
+
+            // 1) LOD first preference
+            if (!lodInvalidated)
+            {
+                kind = AnchorKind.LOD;
+                anchorBarIndex = dayLowBarIndex;
+                return GetAvwapFromBar(dayLowBarIndex, dayLow);
+            }
+
+            // 2) Impulse-origin long fallback
             if (EnableImpulseOriginAnchors && rallyOriginBarIndex >= 0)
             {
                 double rallyAvwap = GetAvwapFromBar(rallyOriginBarIndex, rallyOriginPrice);
@@ -1234,45 +1243,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                     !IsAnchorDegraded(rallyAvwap) &&
                     !IsImpulseOriginDecisivelyBroken(true, rallyOriginBarIndex, rallyOriginPrice))
                 {
-                    double lodAvwap = lodInvalidated ? double.NaN : GetAvwapFromBar(dayLowBarIndex, dayLow);
-                    bool lodDegradedOrGone = lodInvalidated || (!double.IsNaN(lodAvwap) && IsAnchorDegraded(lodAvwap));
-                    if (lodDegradedOrGone)
-                    {
-                        kind = AnchorKind.RallyOrigin;
-                        anchorBarIndex = rallyOriginBarIndex;
-                        return rallyAvwap;
-                    }
+                    kind = AnchorKind.RallyOrigin;
+                    anchorBarIndex = rallyOriginBarIndex;
+                    return rallyAvwap;
                 }
             }
 
-            // WTD anchor as long support: eligible when LOD is invalidated OR degraded,
-            // price is above WTD AVWAP, and WTD AVWAP is not itself degraded.
+            // 3) WTD final fallback
             if (EnableWtdAnchor && wtdAnchorSet && wtdAnchorBarIndex >= 0)
             {
                 double wtd = GetWtdAvwap();
                 if (!double.IsNaN(wtd) && Close[0] > wtd && !IsAnchorDegraded(wtd))
                 {
-                    double lodAvwap = lodInvalidated ? double.NaN : GetAvwapFromBar(dayLowBarIndex, dayLow);
-                    bool lodDegradedOrGone = lodInvalidated || (!double.IsNaN(lodAvwap) && IsAnchorDegraded(lodAvwap));
-                    if (lodDegradedOrGone)
-                    {
-                        kind = AnchorKind.WeeklyOpen;
-                        anchorBarIndex = wtdAnchorBarIndex;
-                        return wtd;
-                    }
+                    kind = AnchorKind.WeeklyOpen;
+                    anchorBarIndex = wtdAnchorBarIndex;
+                    return wtd;
                 }
             }
 
-            if (lodInvalidated)
-            {
-                kind = AnchorKind.LOD;
-                anchorBarIndex = -1;
-                return double.NaN;
-            }
-
             kind = AnchorKind.LOD;
-            anchorBarIndex = dayLowBarIndex;
-            return GetAvwapFromBar(dayLowBarIndex, dayLow);
+            anchorBarIndex = -1;
+            return double.NaN;
         }
 
         private double GetShortAnchor(out AnchorKind kind, out int anchorBarIndex)
@@ -1310,24 +1301,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                     !IsAnchorDegraded(wtdAvwap);
             }
 
-            // Requested policy:
-            //   SelloffOrigin > HOD > WTD
+            // TEMP PRIORITY ORDER (requested): HOD -> SelloffOrigin -> WTD
             // If a higher-priority anchor is invalid/unusable, fall through to the next.
             kind = AnchorKind.HOD;
             anchorBarIndex = -1;
             double selectedAnchor = double.NaN;
 
-            if (selloffCandidateValid)
-            {
-                kind = AnchorKind.SelloffOrigin;
-                anchorBarIndex = selloffOriginBarIndex;
-                selectedAnchor = selloffAvwap;
-            }
-            else if (hodCandidateValid)
+            if (hodCandidateValid)
             {
                 kind = AnchorKind.HOD;
                 anchorBarIndex = dayHighBarIndex;
                 selectedAnchor = hodAvwap;
+            }
+            else if (selloffCandidateValid)
+            {
+                kind = AnchorKind.SelloffOrigin;
+                anchorBarIndex = selloffOriginBarIndex;
+                selectedAnchor = selloffAvwap;
             }
             else if (wtdCandidateValid)
             {
