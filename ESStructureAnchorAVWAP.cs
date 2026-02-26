@@ -2363,6 +2363,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
+            string manualLongText = (ManualLongAnchorFrom > Core.Globals.MinDate)
+                ? GetCmeTime(ManualLongAnchorFrom).ToString("HH:mm")
+                : "None";
+            string manualShortText = (ManualShortAnchorFrom > Core.Globals.MinDate)
+                ? GetCmeTime(ManualShortAnchorFrom).ToString("HH:mm")
+                : "None";
+
             string chartText =
                 "ESStructureAnchorAVWAP\n" +
                 "CME " + FormatCmeTime(nowCme) + "\n" +
@@ -2372,6 +2379,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 "Current Relevant Anchor: " + currentRelevantAnchorText + "\n" +
                 "Next Long Anchor: " + nextLongText + "\n" +
                 "Next Short Anchor: " + nextShortText + "\n" +
+                "Manual Long/Short: " + manualLongText + " / " + manualShortText + "\n" +
                 "Override: " + (structuralOverrideActive
                     ? structuralOverrideKind + " bar=" + structuralOverrideBarIndex
                     : "None") + "\n" +
