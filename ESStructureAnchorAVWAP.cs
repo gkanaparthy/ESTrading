@@ -2,9 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
+using NinjaTrader.Gui.Chart;
 using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.DrawingTools;
@@ -58,6 +61,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private TimeZoneInfo barTimeZone;
         private AVWAP2 manualLongAvwap2;
         private AVWAP2 manualShortAvwap2;
+        private bool manualHotkeysHooked;
+        private Chart chartWindow;
 
         private DateTime sessionDate = Core.Globals.MinDate;
         private bool isGapDay;
@@ -199,6 +204,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnableWtdAnchor = true;
                 EnableImpulseOriginAnchors = true;
                 UseManualAvwap2Anchors = false;
+                EnableManualAnchorHotkeys = true;
                 ManualLongAnchorFrom = Core.Globals.MinDate;
                 ManualShortAnchorFrom = Core.Globals.MinDate;
             }
@@ -211,13 +217,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 priorDay = PriorDayOHLC();
                 InitializeTimeZones();
 
-                if (UseManualAvwap2Anchors)
-                {
-                    if (ManualLongAnchorFrom > Core.Globals.MinDate)
-                        manualLongAvwap2 = AVWAP2(BarsArray[0], ManualLongAnchorFrom, new VWAPDesign.StdDesign { Enabled = false, Num = 2 }, new VWAPDesign.StdDesign { Enabled = false, Num = 3 }, true, true, true);
-                    if (ManualShortAnchorFrom > Core.Globals.MinDate)
-                        manualShortAvwap2 = AVWAP2(BarsArray[0], ManualShortAnchorFrom, new VWAPDesign.StdDesign { Enabled = false, Num = 2 }, new VWAPDesign.StdDesign { Enabled = false, Num = 3 }, true, true, true);
-                }
+                RebuildManualAvwapAnchors();
 
                 dayHigh = double.MinValue;
                 dayLow = double.MaxValue;
@@ -239,6 +239,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                       " maxRisk=" + MaxRiskPerTradeDollars.ToString("F0") +
                       " stopCompression=" + AllowRiskCapStopCompression);
             }
+            else if (State == State.Terminated)
+            {
+                UnhookManualAnchorHotkeys();
+            }
         }
 
         protected override void OnBarUpdate()
@@ -246,6 +250,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (CurrentBar < BarsRequiredToTrade)
                 return;
 
+            EnsureManualAnchorHotkeysHooked();
             ResetDailyStateIfNeeded();
             wtdSeededThisBar = false;
             UpdateWtdAnchorIfNeeded();         // resets and seeds accumulators on new week / cold start
@@ -1228,6 +1233,99 @@ namespace NinjaTrader.NinjaScript.Strategies
                 sum += r;
 
             return sum / recentTradeR.Count;
+        }
+
+        private void RebuildManualAvwapAnchors()
+        {
+            manualLongAvwap2 = null;
+            manualShortAvwap2 = null;
+
+            if (!UseManualAvwap2Anchors)
+                return;
+
+            if (ManualLongAnchorFrom > Core.Globals.MinDate)
+                manualLongAvwap2 = AVWAP2(BarsArray[0], ManualLongAnchorFrom, new VWAPDesign.StdDesign { Enabled = false, Num = 2 }, new VWAPDesign.StdDesign { Enabled = false, Num = 3 }, true, true, true);
+
+            if (ManualShortAnchorFrom > Core.Globals.MinDate)
+                manualShortAvwap2 = AVWAP2(BarsArray[0], ManualShortAnchorFrom, new VWAPDesign.StdDesign { Enabled = false, Num = 2 }, new VWAPDesign.StdDesign { Enabled = false, Num = 3 }, true, true, true);
+        }
+
+        private void EnsureManualAnchorHotkeysHooked()
+        {
+            if (!UseManualAvwap2Anchors || !EnableManualAnchorHotkeys || manualHotkeysHooked || ChartControl == null)
+                return;
+
+            ChartControl.Dispatcher.InvokeAsync(() =>
+            {
+                if (manualHotkeysHooked || ChartControl == null)
+                    return;
+
+                chartWindow = Window.GetWindow(ChartControl.Parent) as Chart;
+                if (chartWindow == null)
+                    return;
+
+                chartWindow.PreviewKeyDown += OnManualAnchorHotkeyPressed;
+                manualHotkeysHooked = true;
+
+                if (EnableAnchorLogging)
+                    PrintWithContext("MANUAL_ANCHOR_HOTKEYS_ENABLED keys=Q(long),A(short),C(clear)");
+            });
+        }
+
+        private void UnhookManualAnchorHotkeys()
+        {
+            if (!manualHotkeysHooked || chartWindow == null)
+                return;
+
+            try
+            {
+                chartWindow.PreviewKeyDown -= OnManualAnchorHotkeyPressed;
+            }
+            catch
+            {
+                // ignore teardown exceptions
+            }
+
+            manualHotkeysHooked = false;
+            chartWindow = null;
+        }
+
+        private void OnManualAnchorHotkeyPressed(object sender, KeyEventArgs e)
+        {
+            if (!UseManualAvwap2Anchors || CurrentBar < 0 || Time == null || Time.Count < 1)
+                return;
+
+            bool changed = false;
+            DateTime anchorTime = Time[0];
+
+            if (e.Key == Key.Q)
+            {
+                ManualLongAnchorFrom = anchorTime;
+                changed = true;
+                if (EnableAnchorLogging)
+                    PrintWithContext("MANUAL_LONG_ANCHOR_SET timeCME=" + FormatCmeTime(GetCmeTimeInt(anchorTime)) + " anchorFrom=" + GetCmeTime(anchorTime).ToString("yyyy-MM-dd HH:mm:ss"));
+            }
+            else if (e.Key == Key.A)
+            {
+                ManualShortAnchorFrom = anchorTime;
+                changed = true;
+                if (EnableAnchorLogging)
+                    PrintWithContext("MANUAL_SHORT_ANCHOR_SET timeCME=" + FormatCmeTime(GetCmeTimeInt(anchorTime)) + " anchorFrom=" + GetCmeTime(anchorTime).ToString("yyyy-MM-dd HH:mm:ss"));
+            }
+            else if (e.Key == Key.C)
+            {
+                ManualLongAnchorFrom = Core.Globals.MinDate;
+                ManualShortAnchorFrom = Core.Globals.MinDate;
+                changed = true;
+                if (EnableAnchorLogging)
+                    PrintWithContext("MANUAL_ANCHORS_CLEARED");
+            }
+
+            if (!changed)
+                return;
+
+            RebuildManualAvwapAnchors();
+            e.Handled = true;
         }
 
         private bool TryGetManualAnchorValue(bool isLong, out double value)
@@ -2615,11 +2713,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool UseManualAvwap2Anchors { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Manual Long Anchor From", GroupName = "Anchors", Order = 39)]
+        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 39)]
+        public bool EnableManualAnchorHotkeys { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Manual Long Anchor From", GroupName = "Anchors", Order = 40)]
         public DateTime ManualLongAnchorFrom { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Manual Short Anchor From", GroupName = "Anchors", Order = 40)]
+        [Display(Name = "Manual Short Anchor From", GroupName = "Anchors", Order = 41)]
         public DateTime ManualShortAnchorFrom { get; set; }
 
         #endregion
