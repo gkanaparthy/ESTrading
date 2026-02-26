@@ -1229,7 +1229,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (EnableImpulseOriginAnchors && rallyOriginBarIndex >= 0)
             {
                 double rallyAvwap = GetAvwapFromBar(rallyOriginBarIndex, rallyOriginPrice);
-                if (!double.IsNaN(rallyAvwap) && Close[0] > rallyAvwap && !IsAnchorDegraded(rallyAvwap))
+                if (!double.IsNaN(rallyAvwap) &&
+                    Close[0] > rallyAvwap &&
+                    !IsAnchorDegraded(rallyAvwap) &&
+                    !IsImpulseOriginDecisivelyBroken(true, rallyOriginBarIndex, rallyOriginPrice))
                 {
                     double lodAvwap = lodInvalidated ? double.NaN : GetAvwapFromBar(dayLowBarIndex, dayLow);
                     bool lodDegradedOrGone = lodInvalidated || (!double.IsNaN(lodAvwap) && IsAnchorDegraded(lodAvwap));
@@ -1289,7 +1292,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 selloffCandidateValid =
                     !double.IsNaN(selloffAvwap) &&
                     Close[0] < selloffAvwap &&
-                    !IsAnchorDegraded(selloffAvwap);
+                    !IsAnchorDegraded(selloffAvwap) &&
+                    !IsImpulseOriginDecisivelyBroken(false, selloffOriginBarIndex, selloffOriginPrice);
             }
 
             double hodAvwap = hodInvalidated ? double.NaN : GetAvwapFromBar(dayHighBarIndex, dayHigh);
@@ -1699,7 +1703,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     out double bullPrice,
                     out int bullBarIndex,
                     out double bullScore) &&
-                ShouldReplaceImpulseOriginAnchor(rallyOriginBarIndex, rallyOriginScore, bullBarIndex, bullScore))
+                ShouldReplaceImpulseOriginAnchor(true, rallyOriginBarIndex, rallyOriginPrice, rallyOriginScore, bullBarIndex, bullScore))
             {
                 rallyOriginBarIndex = bullBarIndex;
                 rallyOriginPrice = bullPrice;
@@ -1719,7 +1723,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     out double bearPrice,
                     out int bearBarIndex,
                     out double bearScore) &&
-                ShouldReplaceImpulseOriginAnchor(selloffOriginBarIndex, selloffOriginScore, bearBarIndex, bearScore))
+                ShouldReplaceImpulseOriginAnchor(false, selloffOriginBarIndex, selloffOriginPrice, selloffOriginScore, bearBarIndex, bearScore))
             {
                 selloffOriginBarIndex = bearBarIndex;
                 selloffOriginPrice = bearPrice;
@@ -1736,7 +1740,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         private bool ShouldReplaceImpulseOriginAnchor(
+            bool bullish,
             int currentBarIndex,
+            double currentPrice,
             double currentScore,
             int candidateBarIndex,
             double candidateScore)
@@ -1745,6 +1751,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
 
             if (currentBarIndex < 0)
+                return true;
+
+            // If the current origin has been decisively broken, rotate immediately.
+            // Example: short selloff origin is valid until price clearly reclaims above it.
+            if (IsImpulseOriginDecisivelyBroken(bullish, currentBarIndex, currentPrice))
                 return true;
 
             if (candidateBarIndex > currentBarIndex)
@@ -1762,6 +1773,36 @@ namespace NinjaTrader.NinjaScript.Strategies
             // This lets the marker move from a later sub-leg to the true start of the selloff/rally.
             const double backCorrectionRetention = 0.90;
             return candidateScore >= currentScore * backCorrectionRetention;
+        }
+
+        private bool IsImpulseOriginDecisivelyBroken(bool bullish, int originBarIndex, double originPrice)
+        {
+            if (originBarIndex < 0 || originBarIndex > CurrentBar)
+                return true;
+
+            double avwap = GetAvwapFromBar(originBarIndex, originPrice);
+            if (double.IsNaN(avwap))
+                return true;
+
+            // "Sufficiently crossed" definition: 2 closes beyond AVWAP by 2 ticks
+            // in the last 3 bars.
+            const int confirmBarsNeeded = 2;
+            const int lookbackBars = 3;
+            double buffer = 2 * TickSize;
+
+            int confirmations = 0;
+            int lookback = Math.Min(lookbackBars - 1, CurrentBar);
+            for (int i = 0; i <= lookback; i++)
+            {
+                bool broken = bullish
+                    ? (Close[i] < avwap - buffer)
+                    : (Close[i] > avwap + buffer);
+
+                if (broken)
+                    confirmations++;
+            }
+
+            return confirmations >= confirmBarsNeeded;
         }
 
         private bool TryFindImpulseOriginAnchor(
