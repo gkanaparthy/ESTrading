@@ -2445,47 +2445,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            string manualLongText = (ManualLongAnchorFrom > Core.Globals.MinDate)
-                ? GetCmeTime(ManualLongAnchorFrom).ToString("HH:mm")
-                : "None";
-            string manualShortText = (ManualShortAnchorFrom > Core.Globals.MinDate)
-                ? GetCmeTime(ManualShortAnchorFrom).ToString("HH:mm")
-                : "None";
-
             string chartText =
-                "ESStructureAnchorAVWAP\n" +
-                "CME " + FormatCmeTime(nowCme) + "\n" +
-                "Long: " + longText + "\n" +
-                "Short: " + shortText + "\n" +
-                "WTD AVWAP: " + wtdText + "\n" +
-                "Current Relevant Anchor: " + currentRelevantAnchorText + "\n" +
-                "Next Long Anchor: " + nextLongText + "\n" +
-                "Next Short Anchor: " + nextShortText + "\n" +
-                "Manual Long/Short: " + manualLongText + " / " + manualShortText + "\n" +
-                "Override: " + (structuralOverrideActive
-                    ? structuralOverrideKind + " bar=" + structuralOverrideBarIndex
-                    : "None") + "\n" +
-                "Invalidation L/H: " + lodInvalidated + "/" + hodInvalidated + "\n" +
-                "Active/Pending: " +
-                (string.IsNullOrEmpty(activeSignal) ? "None" : activeSignal) + "/" +
-                (string.IsNullOrEmpty(pendingSignal) ? "None" : pendingSignal);
+                "Long Anchor: " + longText + "\n" +
+                "Short Anchor: " + shortText + "\n" +
+                "Relevant Anchor: " + currentRelevantAnchorText;
 
             Draw.TextFixed(this, AnchorStatusDrawTag, chartText, TextPosition.BottomLeft);
             DrawAnchorOriginMarkers(longKind, longAnchor, longAnchorBar, shortKind, shortAnchor, shortAnchorBar);
-            DrawImpulseOriginMarker(
-                RallyOriginMarkerTag,
-                RallyOriginLabelTag,
-                rallyOriginBarIndex,
-                rallyOriginPrice,
-                "RallyOrigin",
-                Brushes.LawnGreen);
-            DrawImpulseOriginMarker(
-                SelloffOriginMarkerTag,
-                SelloffOriginLabelTag,
-                selloffOriginBarIndex,
-                selloffOriginPrice,
-                "SelloffOrigin",
-                Brushes.OrangeRed);
+            RemoveDrawObject(RallyOriginMarkerTag);
+            RemoveDrawObject(RallyOriginLabelTag);
+            RemoveDrawObject(SelloffOriginMarkerTag);
+            RemoveDrawObject(SelloffOriginLabelTag);
         }
 
         private static string FormatCmeTime(int cmeTime)
