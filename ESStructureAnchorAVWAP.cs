@@ -222,7 +222,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 OverrideCooldownBars = 20;
                 MinOverrideActiveBars = 3;
                 GapThresholdPoints = 8.0;
-                UseTradeTimeWindows = true;
 
                 ExtremeAtrThreshold = 10.0;
                 MinAtrForEntry = 1.5;
@@ -804,9 +803,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool IsInTradeWindow(int time)
         {
-            if (!UseTradeTimeWindows)
-                return true;
-
             if (UseExtendedHours)
                 return true;
 
@@ -2749,10 +2745,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(2.0, 20.0)]
         [Display(Name = "Gap Threshold Points", GroupName = "Session", Order = 18)]
         public double GapThresholdPoints { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Use Trade Time Windows", GroupName = "Session", Order = 19)]
-        public bool UseTradeTimeWindows { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Use Extended Hours", GroupName = "Session", Order = 19)]
