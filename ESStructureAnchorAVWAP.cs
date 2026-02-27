@@ -2225,12 +2225,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             string biasAtAnchor = ComputeBiasAtAnchorText(longAnchor, shortAnchor);
             string chartText =
-                "First Anchor Time: " + firstAnchorTime + "\n" +
-                "First Anchor AVWAP: " + firstAnchorValue + "\n" +
-                "Second Anchor Time: " + secondAnchorTime + "\n" +
-                "Second Anchor AVWAP: " + secondAnchorValue + "\n" +
-                "Relevant Anchor Time: " + relevantAnchorTime + "\n" +
-                "Relevant Anchor AVWAP: " + relevantAnchorValue + "\n" +
+                "First Anchor Time - First Anchor AVWAP: " + firstAnchorTime + " - " + firstAnchorValue + "\n" +
+                "Second Anchor Time - Second Anchor AVWAP: " + secondAnchorTime + " - " + secondAnchorValue + "\n" +
+                "Relevant Anchor Time - Relevant Anchor AVWAP: " + relevantAnchorTime + " - " + relevantAnchorValue + "\n" +
                 "Bias at Anchor: " + biasAtAnchor;
 
             Draw.TextFixed(this, AnchorStatusDrawTag, chartText, TextPosition.BottomLeft);
