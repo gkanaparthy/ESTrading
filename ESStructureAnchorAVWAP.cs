@@ -2467,13 +2467,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             double touchTol = TouchToleranceTicks * TickSize;
-            // Touch = bar actually reaches the anchor zone (within tolerance on BOTH sides).
-            // Without the floor/ceiling check, a bar 50 points through the anchor
-            // would still register as a "touch," which is really a breakdown, not a bounce setup.
+            // Touch = bar range intersects the anchor zone.
+            // This avoids misses when a valid rejection wick pokes through the zone,
+            // while still requiring real interaction with the anchor.
             bool longTouch = longAnchorUsable && !double.IsNaN(longAnchor) &&
-                             Low[0] <= longAnchor + touchTol && Low[0] >= longAnchor - touchTol;
+                             High[0] >= longAnchor - touchTol && Low[0] <= longAnchor + touchTol;
             bool shortTouch = shortAnchorUsable && !double.IsNaN(shortAnchor) &&
-                              High[0] >= shortAnchor - touchTol && High[0] <= shortAnchor + touchTol;
+                              High[0] >= shortAnchor - touchTol && Low[0] <= shortAnchor + touchTol;
 
             if (longTouch)
             {
