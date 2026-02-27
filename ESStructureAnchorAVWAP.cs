@@ -2676,7 +2676,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Min Stop Ticks", GroupName = "Risk", Order = 4)]
         public int MinStopTicks { get; set; }
 
-        [NinjaScriptProperty]
         [Range(1, 20)]
         [Display(Name = "Anchor Zone Ticks", GroupName = "Anchors", Order = 5)]
         public int AnchorZoneTicks { get; set; }
@@ -2686,12 +2685,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Max Opportunities Per Day", GroupName = "Risk", Order = 6)]
         public int MaxOpportunitiesPerDay { get; set; }
 
-        [NinjaScriptProperty]
         [Range(1, 10)]
         [Display(Name = "Max Consecutive Losses", GroupName = "Risk", Order = 7)]
         public int MaxConsecutiveLosses { get; set; }
 
-        [NinjaScriptProperty]
         [Range(-10.0, -0.1)]
         [Display(Name = "Daily Stop R", GroupName = "Risk", Order = 8)]
         public double DailyStopR { get; set; }
@@ -2701,47 +2698,38 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Max Risk Per Trade ($)", GroupName = "Risk", Order = 9)]
         public double MaxRiskPerTradeDollars { get; set; }
 
-        [NinjaScriptProperty]
         [Range(10, 120)]
         [Display(Name = "Structure Lookback Bars", GroupName = "Anchors", Order = 10)]
         public int StructureLookbackBars { get; set; }
 
-        [NinjaScriptProperty]
         [Range(4, 20)]
         [Display(Name = "Impulse Bars", GroupName = "Anchors", Order = 11)]
         public int ImpulseBars { get; set; }
 
-        [NinjaScriptProperty]
         [Range(0.5, 4.0)]
         [Display(Name = "Structure Displacement ATR", GroupName = "Anchors", Order = 12)]
         public double StructureDisplacementAtr { get; set; }
 
-        [NinjaScriptProperty]
         [Range(0.5, 3.0)]
         [Display(Name = "Structure Volume Multiple", GroupName = "Anchors", Order = 13)]
         public double StructureVolumeMultiple { get; set; }
 
-        [NinjaScriptProperty]
         [Range(4, 30)]
         [Display(Name = "Chop Lookback Bars", GroupName = "Anchors", Order = 14)]
         public int ChopLookbackBars { get; set; }
 
-        [NinjaScriptProperty]
         [Range(1, 15)]
         [Display(Name = "Chop Flip Threshold", GroupName = "Anchors", Order = 15)]
         public int ChopFlipThreshold { get; set; }
 
-        [NinjaScriptProperty]
         [Range(1.0, 2.0)]
         [Display(Name = "Structure Score Margin", GroupName = "Anchors", Order = 16)]
         public double StructureScoreMargin { get; set; }
 
-        [NinjaScriptProperty]
         [Range(5, 60)]
         [Display(Name = "Override Cooldown Bars", GroupName = "Anchors", Order = 17)]
         public int OverrideCooldownBars { get; set; }
 
-        [NinjaScriptProperty]
         [Range(2.0, 20.0)]
         [Display(Name = "Gap Threshold Points", GroupName = "Session", Order = 18)]
         public double GapThresholdPoints { get; set; }
@@ -2760,7 +2748,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Min ATR For Entry", GroupName = "Regime", Order = 22)]
         public double MinAtrForEntry { get; set; }
 
-        [NinjaScriptProperty]
         [Range(1, 10)]
         [Display(Name = "Trend Slope Bars", GroupName = "Regime", Order = 23)]
         public int TrendSlopeBars { get; set; }
@@ -2791,27 +2778,22 @@ namespace NinjaTrader.NinjaScript.Strategies
         public double AnchorProximityAtrMultiple { get; set; }
 
 
-        [NinjaScriptProperty]
         [Range(1.0, 4.0)]
         [Display(Name = "Defended Low Impulse ATR", GroupName = "Anchors", Order = 25)]
         public double DefendedLowImpulseAtr { get; set; }
 
-        [NinjaScriptProperty]
         [Range(3, 20)]
         [Display(Name = "Defended Low Max Bars", GroupName = "Anchors", Order = 26)]
         public int DefendedLowMaxBars { get; set; }
 
-        [NinjaScriptProperty]
         [Range(5, 20)]
         [Display(Name = "Rolling Expectancy Trades", GroupName = "Risk", Order = 27)]
         public int RollingExpectancyTrades { get; set; }
 
-        [NinjaScriptProperty]
         [Range(1, 5)]
         [Display(Name = "Invalidation Follow-Through Bars", GroupName = "Anchors", Order = 28)]
         public int InvalidationFollowThroughBars { get; set; }
 
-        [NinjaScriptProperty]
         [Range(1, 10)]
         [Display(Name = "Min Anchor Age Bars", GroupName = "Entry", Order = 29)]
         public int MinAnchorAgeBars { get; set; }
@@ -2824,29 +2806,23 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Show Anchor Status On Chart", GroupName = "Diagnostics", Order = 31)]
         public bool ShowAnchorStatusOnChart { get; set; }
 
-        [NinjaScriptProperty]
         [Display(Name = "Allow Risk Cap Stop Compression", GroupName = "Risk", Order = 32)]
         public bool AllowRiskCapStopCompression { get; set; }
 
-        [NinjaScriptProperty]
         [Display(Name = "Use Session ATR For Stops", GroupName = "Risk", Order = 33)]
         public bool UseSessionAtrForStops { get; set; }
 
-        [NinjaScriptProperty]
         [Range(0.00, 0.90)]
         [Display(Name = "Max Stop Compression Fraction", GroupName = "Risk", Order = 34)]
         public double MaxStopCompressionFraction { get; set; }
 
-        [NinjaScriptProperty]
         [Range(0, 20)]
         [Display(Name = "Min Override Active Bars", GroupName = "Anchors", Order = 35)]
         public int MinOverrideActiveBars { get; set; }
 
-        [NinjaScriptProperty]
         [Display(Name = "Enable WTD Anchor (Sun 17:00 CT)", GroupName = "Anchors", Order = 36)]
         public bool EnableWtdAnchor { get; set; }
 
-        [NinjaScriptProperty]
         [Display(Name = "Enable Impulse Origin Anchors", GroupName = "Anchors", Order = 37)]
         public bool EnableImpulseOriginAnchors { get; set; }
 
