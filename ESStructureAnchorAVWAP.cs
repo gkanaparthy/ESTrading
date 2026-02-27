@@ -133,14 +133,22 @@ namespace NinjaTrader.NinjaScript.Strategies
         private readonly Dictionary<string, int> anchorTradesToday = new Dictionary<string, int>();
         private bool longTouchSeen;
         private bool shortTouchSeen;
+        private bool longCloseBackSeen;
+        private bool shortCloseBackSeen;
+        private bool longBullishSeen;
+        private bool shortBearishSeen;
         private int longFirstTouchBar = -1;
         private int shortFirstTouchBar = -1;
         private bool pendingBreakoutLong;
         private bool pendingBreakoutShort;
-        private double pendingBreakoutTrigger;
-        private int pendingBreakoutSetBar = -1;
-        private int pendingBreakoutAnchorBar = -1;
-        private double pendingBreakoutAnchorPrice;
+        private double pendingBreakoutLongTrigger;
+        private double pendingBreakoutShortTrigger;
+        private int pendingBreakoutLongSetBar = -1;
+        private int pendingBreakoutShortSetBar = -1;
+        private int pendingBreakoutLongAnchorBar = -1;
+        private int pendingBreakoutShortAnchorBar = -1;
+        private double pendingBreakoutLongAnchorPrice;
+        private double pendingBreakoutShortAnchorPrice;
 
         // Persistent impulse-origin anchors (start candle of sharp directional move)
         private int rallyOriginBarIndex = -1;
@@ -185,7 +193,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 AtrPeriod = 14;
                 AtrStopMultiple = 1.25;
-                TargetRMultiple = 1.0;
+                TargetRMultiple = 2.0;
                 MinStopTicks = 8;
                 AnchorZoneTicks = 4;
                 ReclaimLookbackBars = 5;
@@ -194,7 +202,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SignalCooldownBars = 5;
                 TouchToleranceTicks = 2;
                 MaxStopPoints = 5.0;
-                AnchorProximityAtrMultiple = 2.0;
+                AnchorProximityAtrMultiple = 1.0;
+                UseExtendedHours = false;
 
                 MaxOpportunitiesPerDay = 3;
                 MaxConsecutiveLosses = 2;
@@ -582,14 +591,22 @@ namespace NinjaTrader.NinjaScript.Strategies
             anchorTradesToday.Clear();
             longTouchSeen = false;
             shortTouchSeen = false;
+            longCloseBackSeen = false;
+            shortCloseBackSeen = false;
+            longBullishSeen = false;
+            shortBearishSeen = false;
             longFirstTouchBar = -1;
             shortFirstTouchBar = -1;
             pendingBreakoutLong = false;
             pendingBreakoutShort = false;
-            pendingBreakoutSetBar = -1;
-            pendingBreakoutAnchorBar = -1;
-            pendingBreakoutAnchorPrice = 0;
-            pendingBreakoutTrigger = 0;
+            pendingBreakoutLongSetBar = -1;
+            pendingBreakoutShortSetBar = -1;
+            pendingBreakoutLongAnchorBar = -1;
+            pendingBreakoutShortAnchorBar = -1;
+            pendingBreakoutLongAnchorPrice = 0;
+            pendingBreakoutShortAnchorPrice = 0;
+            pendingBreakoutLongTrigger = 0;
+            pendingBreakoutShortTrigger = 0;
             sessionTrueRangeWindow.Clear();
             sessionTrueRangeSum = 0;
             sessionAtrForStops = 0;
@@ -788,7 +805,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool IsInTradeWindow(int time)
         {
-            // Forced RTH-only behavior
+            if (UseExtendedHours)
+                return true;
+
             return time >= CmeMorningWindowStart && time <= CmeMorningWindowEnd;
         }
 
@@ -2412,43 +2431,87 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool longTouch = longAnchorUsable && !double.IsNaN(longAnchor) && Low[0] <= longAnchor + touchTol;
             bool shortTouch = shortAnchorUsable && !double.IsNaN(shortAnchor) && High[0] >= shortAnchor - touchTol;
 
-            if (!longTouchSeen && longTouch) { longTouchSeen = true; longFirstTouchBar = CurrentBar; }
-            if (!shortTouchSeen && shortTouch) { shortTouchSeen = true; shortFirstTouchBar = CurrentBar; }
-
-            if (pendingBreakoutLong && CurrentBar > pendingBreakoutSetBar)
+            if (longTouch)
             {
-                if (High[0] > pendingBreakoutTrigger && CanEnterForAnchor(pendingBreakoutAnchorBar, true, pendingBreakoutAnchorPrice, shortAnchor))
-                    SubmitDirectionalEntry(true, pendingBreakoutAnchorPrice);
+                longTouchSeen = true;
+                longFirstTouchBar = CurrentBar;
+            }
+            if (shortTouch)
+            {
+                shortTouchSeen = true;
+                shortFirstTouchBar = CurrentBar;
+            }
+
+            if (longTouchSeen && longAnchorUsable && !double.IsNaN(longAnchor))
+            {
+                if (Close[0] > longAnchor)
+                    longCloseBackSeen = true;
+                if (Close[0] > Open[0])
+                    longBullishSeen = true;
+            }
+
+            if (shortTouchSeen && shortAnchorUsable && !double.IsNaN(shortAnchor))
+            {
+                if (Close[0] < shortAnchor)
+                    shortCloseBackSeen = true;
+                if (Close[0] < Open[0])
+                    shortBearishSeen = true;
+            }
+
+            if (pendingBreakoutLong && CurrentBar > pendingBreakoutLongSetBar)
+            {
+                if (High[0] > pendingBreakoutLongTrigger && CanEnterForAnchor(pendingBreakoutLongAnchorBar, true, pendingBreakoutLongAnchorPrice, shortAnchor))
+                    SubmitDirectionalEntry(true, pendingBreakoutLongAnchorPrice, pendingBreakoutLongAnchorBar);
                 pendingBreakoutLong = false;
             }
 
-            if (pendingBreakoutShort && CurrentBar > pendingBreakoutSetBar)
+            if (pendingBreakoutShort && CurrentBar > pendingBreakoutShortSetBar)
             {
-                if (Low[0] < pendingBreakoutTrigger && CanEnterForAnchor(pendingBreakoutAnchorBar, false, pendingBreakoutAnchorPrice, longAnchor))
-                    SubmitDirectionalEntry(false, pendingBreakoutAnchorPrice);
+                if (Low[0] < pendingBreakoutShortTrigger && CanEnterForAnchor(pendingBreakoutShortAnchorBar, false, pendingBreakoutShortAnchorPrice, longAnchor))
+                    SubmitDirectionalEntry(false, pendingBreakoutShortAnchorPrice, pendingBreakoutShortAnchorBar);
                 pendingBreakoutShort = false;
             }
 
-            bool longConfirm = longTouchSeen && longTouch && CurrentBar > longFirstTouchBar && Close[0] > longAnchor && Close[0] > Open[0] && MajorityApproachFromAbove(longAnchor);
-            bool shortConfirm = shortTouchSeen && shortTouch && CurrentBar > shortFirstTouchBar && Close[0] < shortAnchor && Close[0] < Open[0] && MajorityApproachFromBelow(shortAnchor);
+            int longTradeCount = GetAnchorTradeCount(longAnchorBar, true);
+            int shortTradeCount = GetAnchorTradeCount(shortAnchorBar, false);
+            bool longRetestSatisfied = longTradeCount == 0 || (longTouchSeen && longFirstTouchBar >= 0);
+            bool shortRetestSatisfied = shortTradeCount == 0 || (shortTouchSeen && shortFirstTouchBar >= 0);
+
+            bool longConfirm = longTouchSeen && longCloseBackSeen && longBullishSeen && longRetestSatisfied && MajorityApproachFromAbove(longAnchor);
+            bool shortConfirm = shortTouchSeen && shortCloseBackSeen && shortBearishSeen && shortRetestSatisfied && MajorityApproachFromBelow(shortAnchor);
 
             if (longConfirm)
             {
                 pendingBreakoutLong = true;
-                pendingBreakoutSetBar = CurrentBar;
-                pendingBreakoutTrigger = High[0];
-                pendingBreakoutAnchorBar = longAnchorBar;
-                pendingBreakoutAnchorPrice = longAnchor;
+                pendingBreakoutLongSetBar = CurrentBar;
+                pendingBreakoutLongTrigger = High[0];
+                pendingBreakoutLongAnchorBar = longAnchorBar;
+                pendingBreakoutLongAnchorPrice = longAnchor;
+                longTouchSeen = false;
+                longCloseBackSeen = false;
+                longBullishSeen = false;
             }
 
             if (shortConfirm)
             {
                 pendingBreakoutShort = true;
-                pendingBreakoutSetBar = CurrentBar;
-                pendingBreakoutTrigger = Low[0];
-                pendingBreakoutAnchorBar = shortAnchorBar;
-                pendingBreakoutAnchorPrice = shortAnchor;
+                pendingBreakoutShortSetBar = CurrentBar;
+                pendingBreakoutShortTrigger = Low[0];
+                pendingBreakoutShortAnchorBar = shortAnchorBar;
+                pendingBreakoutShortAnchorPrice = shortAnchor;
+                shortTouchSeen = false;
+                shortCloseBackSeen = false;
+                shortBearishSeen = false;
             }
+        }
+
+        private int GetAnchorTradeCount(int anchorBar, bool isLong)
+        {
+            if (anchorBar < 0)
+                return 0;
+
+            string key = (isLong ? "L:" : "S:") + anchorBar;
+            return anchorTradesToday.TryGetValue(key, out int count) ? count : 0;
         }
 
         private bool CanEnterForAnchor(int anchorBar, bool isLong, double ownAnchor, double oppositeAnchor)
@@ -2466,7 +2529,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             return true;
         }
 
-        private void SubmitDirectionalEntry(bool isLong, double anchorPrice)
+        private void SubmitDirectionalEntry(bool isLong, double anchorPrice, int anchorBar)
         {
             int quantity = DefaultQuantity;
             int stopTicks = ComputeSwingStopTicks(isLong);
@@ -2474,10 +2537,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!TryApplyRiskCap(ref quantity, ref stopTicks, out stopCompressed))
                 return;
 
-            int targetTicks = Math.Max(stopTicks + 1, (int)Math.Round(stopTicks * TargetRMultiple));
+            double dynamicTargetR = atr[0] >= 6.0 ? 3.0 : 2.0;
+            int targetTicks = Math.Max(stopTicks + 1, (int)Math.Round(stopTicks * dynamicTargetR));
             SubmitEntry(isLong, quantity, stopTicks, targetTicks, false);
 
-            string key = (isLong ? "L:" : "S:") + pendingBreakoutAnchorBar;
+            string key = (isLong ? "L:" : "S:") + anchorBar;
             anchorTradesToday[key] = anchorTradesToday.TryGetValue(key, out int c) ? c + 1 : 1;
         }
 
@@ -2616,6 +2680,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Use Trade Time Windows", GroupName = "Session", Order = 19)]
         public bool UseTradeTimeWindows { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Use Extended Hours", GroupName = "Session", Order = 19)]
+        public bool UseExtendedHours { get; set; }
 
         [NinjaScriptProperty]
         [Range(5, 40)]
