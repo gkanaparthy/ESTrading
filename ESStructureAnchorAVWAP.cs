@@ -2276,9 +2276,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             string biasAtAnchor = ComputeBiasAtAnchorText(longAnchor, shortAnchor);
+            double sessionVwapNow = EnableSessionVwapAnchor ? GetSessionVwapValue() : double.NaN;
+            string sessionVwapText = EnableSessionVwapAnchor
+                ? (double.IsNaN(sessionVwapNow) ? "NA" : sessionVwapNow.ToString("F2"))
+                : "Disabled";
+
             string chartText =
                 "First Anchor Time - First Anchor AVWAP: " + firstAnchorTime + " - " + firstAnchorValue + "\n" +
                 "Second Anchor Time - Second Anchor AVWAP: " + secondAnchorTime + " - " + secondAnchorValue + "\n" +
+                "Session VWAP Value: " + sessionVwapText + "\n" +
                 "Relevant Anchor Time - Relevant Anchor AVWAP: " + relevantAnchorTime + " - " + relevantAnchorValue + "\n" +
                 "Bias at Anchor: " + biasAtAnchor;
 
