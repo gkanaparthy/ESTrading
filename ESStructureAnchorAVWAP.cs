@@ -2477,14 +2477,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 shortTouchAnchorBar = shortAnchorBar;
             }
 
-            double touchTol = TouchToleranceTicks * TickSize;
-            // Touch = bar range intersects the anchor zone.
-            // This avoids misses when a valid rejection wick pokes through the zone,
-            // while still requiring real interaction with the anchor.
-            bool longTouch = longAnchorUsable && !double.IsNaN(longAnchor) &&
-                             High[0] >= longAnchor - touchTol && Low[0] <= longAnchor + touchTol;
-            bool shortTouch = shortAnchorUsable && !double.IsNaN(shortAnchor) &&
-                              High[0] >= shortAnchor - touchTol && Low[0] <= shortAnchor + touchTol;
+            // Touch gating disabled by request: if anchor is usable, allow confirmation
+            // without requiring bar-range interaction with a touch zone.
+            bool longTouch = longAnchorUsable && !double.IsNaN(longAnchor);
+            bool shortTouch = shortAnchorUsable && !double.IsNaN(shortAnchor);
 
             if (longTouch)
             {
@@ -2548,13 +2544,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 pendingBreakoutShort = false;
             }
 
-            int longTradeCount = GetAnchorTradeCount(longAnchorBar, true);
-            int shortTradeCount = GetAnchorTradeCount(shortAnchorBar, false);
-            bool longRetestSatisfied = longTradeCount == 0 || (longTouchSeen && longFirstTouchBar >= 0);
-            bool shortRetestSatisfied = shortTradeCount == 0 || (shortTouchSeen && shortFirstTouchBar >= 0);
+            // With touch gating disabled, retest checks are not required for confirmation.
+            bool longRetestSatisfied = true;
+            bool shortRetestSatisfied = true;
 
-            bool longConfirm = longTouchSeen && longCloseBackSeen && longBullishSeen && longRetestSatisfied && MajorityApproachFromAbove(longAnchor);
-            bool shortConfirm = shortTouchSeen && shortCloseBackSeen && shortBearishSeen && shortRetestSatisfied && MajorityApproachFromBelow(shortAnchor);
+            bool longConfirm = longCloseBackSeen && longBullishSeen && longRetestSatisfied && MajorityApproachFromAbove(longAnchor);
+            bool shortConfirm = shortCloseBackSeen && shortBearishSeen && shortRetestSatisfied && MajorityApproachFromBelow(shortAnchor);
 
             // Only one confirmation per bar. If both fire, prefer the one with
             // the closer anchor (more likely to be the actionable setup).
@@ -2773,9 +2768,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Signal Cooldown Bars", GroupName = "Entry", Order = 24)]
         public int SignalCooldownBars { get; set; }
 
-        [NinjaScriptProperty]
-        [Range(1, 8)]
-        [Display(Name = "Touch Tolerance Ticks", GroupName = "Entry", Order = 24)]
+        [Browsable(false)]
         public int TouchToleranceTicks { get; set; }
 
         [NinjaScriptProperty]
