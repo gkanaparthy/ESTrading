@@ -2594,10 +2594,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 shortTouchAnchorBar = shortAnchorBar;
             }
 
-            // Touch gating disabled by request: if anchor is usable, allow confirmation
-            // without requiring bar-range interaction with a touch zone.
-            bool longTouch = longAnchorUsable && !double.IsNaN(longAnchor);
-            bool shortTouch = shortAnchorUsable && !double.IsNaN(shortAnchor);
+            // Keep true touch/reject event detection for reaction stats,
+            // while entry confirmation itself is allowed without hard touch gating.
+            bool longTouch = longAnchorUsable && !double.IsNaN(longAnchor) && High[0] >= longAnchor && Low[0] <= longAnchor;
+            bool shortTouch = shortAnchorUsable && !double.IsNaN(shortAnchor) && High[0] >= shortAnchor && Low[0] <= shortAnchor;
 
             if (longTouch)
             {
@@ -2618,11 +2618,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 shortTouchSeen = true;
             }
 
-            if (longTouchSeen && longAnchorUsable && !double.IsNaN(longAnchor))
+            if (longAnchorUsable && !double.IsNaN(longAnchor))
             {
                 if (Close[0] > longAnchor)
                 {
-                    if (!longCloseBackSeen)
+                    if (longTouchSeen && !longCloseBackSeen)
                         IncrementAnchorReactionEvent(longKind, longAnchorBar, "reject");
                     longCloseBackSeen = true;
                 }
@@ -2630,11 +2630,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     longBullishSeen = true;
             }
 
-            if (shortTouchSeen && shortAnchorUsable && !double.IsNaN(shortAnchor))
+            if (shortAnchorUsable && !double.IsNaN(shortAnchor))
             {
                 if (Close[0] < shortAnchor)
                 {
-                    if (!shortCloseBackSeen)
+                    if (shortTouchSeen && !shortCloseBackSeen)
                         IncrementAnchorReactionEvent(shortKind, shortAnchorBar, "reject");
                     shortCloseBackSeen = true;
                 }
@@ -2783,7 +2783,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private AnchorCandidate ApplyConservativeClusterChoice(List<AnchorCandidate> candidates, bool isLong)
         {
             AnchorCandidate best = SelectBestByScore(candidates);
-            double atrBand = Math.Max(TickSize, atr[0]); // 1 ATR cluster band
+            double atrNow = atr[0];
+            double atrBand = (double.IsNaN(atrNow) || atrNow <= 0) ? TickSize : Math.Max(TickSize, atrNow); // 1 ATR cluster band
 
             AnchorCandidate chosen = best;
             for (int i = 0; i < candidates.Count; i++)
