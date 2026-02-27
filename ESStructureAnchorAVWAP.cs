@@ -139,6 +139,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool shortBearishSeen;
         private int longFirstTouchBar = -1;
         private int shortFirstTouchBar = -1;
+        private int longTouchAnchorBar = -1;
+        private int shortTouchAnchorBar = -1;
         private bool pendingBreakoutLong;
         private bool pendingBreakoutShort;
         private double pendingBreakoutLongTrigger;
@@ -597,6 +599,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             shortBearishSeen = false;
             longFirstTouchBar = -1;
             shortFirstTouchBar = -1;
+            longTouchAnchorBar = -1;
+            shortTouchAnchorBar = -1;
             pendingBreakoutLong = false;
             pendingBreakoutShort = false;
             pendingBreakoutLongSetBar = -1;
@@ -805,6 +809,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool IsInTradeWindow(int time)
         {
+            if (!UseTradeTimeWindows)
+                return true;
+
             if (UseExtendedHours)
                 return true;
 
@@ -1520,6 +1527,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             currentTradeMaeR = 0;
 
             opportunitiesToday++;
+            signalCooldownRemaining = Math.Max(signalCooldownRemaining, SignalCooldownBars);
             if (isTierB)
                 tierBAttemptUsed = true;
 
@@ -1532,6 +1540,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool TryApplyRiskCap(ref int quantity, ref int stopTicks, out bool stopCompressed)
         {
             stopCompressed = false;
+            int originalStopTicks = stopTicks;
 
             if (quantity <= 0 || stopTicks <= 0)
                 return false;
@@ -1560,6 +1569,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 if (maxAffordableStopTicks >= stopTicks)
                     return true;
+
+                int maxCompressionTicks = (int)Math.Floor(originalStopTicks * Math.Max(0.0, MaxStopCompressionFraction));
+                int compressedBy = originalStopTicks - maxAffordableStopTicks;
+                if (compressedBy > maxCompressionTicks)
+                    return false;
 
                 stopTicks = maxAffordableStopTicks;
                 stopCompressed = true;
@@ -2427,19 +2441,55 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void EvaluateAnchorRetestBreakout(int nowCme, AnchorKind longKind, double longAnchor, int longAnchorBar, bool longAnchorUsable, AnchorKind shortKind, double shortAnchor, int shortAnchorBar, bool shortAnchorUsable)
         {
+            if (!longAnchorUsable || longAnchorBar < 0 || double.IsNaN(longAnchor))
+            {
+                longTouchSeen = false;
+                longCloseBackSeen = false;
+                longBullishSeen = false;
+                longFirstTouchBar = -1;
+                longTouchAnchorBar = -1;
+            }
+            else if (longTouchAnchorBar != longAnchorBar)
+            {
+                longTouchSeen = false;
+                longCloseBackSeen = false;
+                longBullishSeen = false;
+                longFirstTouchBar = -1;
+                longTouchAnchorBar = longAnchorBar;
+            }
+
+            if (!shortAnchorUsable || shortAnchorBar < 0 || double.IsNaN(shortAnchor))
+            {
+                shortTouchSeen = false;
+                shortCloseBackSeen = false;
+                shortBearishSeen = false;
+                shortFirstTouchBar = -1;
+                shortTouchAnchorBar = -1;
+            }
+            else if (shortTouchAnchorBar != shortAnchorBar)
+            {
+                shortTouchSeen = false;
+                shortCloseBackSeen = false;
+                shortBearishSeen = false;
+                shortFirstTouchBar = -1;
+                shortTouchAnchorBar = shortAnchorBar;
+            }
+
             double touchTol = TouchToleranceTicks * TickSize;
             bool longTouch = longAnchorUsable && !double.IsNaN(longAnchor) && Low[0] <= longAnchor + touchTol;
             bool shortTouch = shortAnchorUsable && !double.IsNaN(shortAnchor) && High[0] >= shortAnchor - touchTol;
 
             if (longTouch)
             {
+                if (!longTouchSeen)
+                    longFirstTouchBar = CurrentBar;
                 longTouchSeen = true;
-                longFirstTouchBar = CurrentBar;
             }
             if (shortTouch)
             {
+                if (!shortTouchSeen)
+                    shortFirstTouchBar = CurrentBar;
                 shortTouchSeen = true;
-                shortFirstTouchBar = CurrentBar;
             }
 
             if (longTouchSeen && longAnchorUsable && !double.IsNaN(longAnchor))
@@ -2490,6 +2540,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 longTouchSeen = false;
                 longCloseBackSeen = false;
                 longBullishSeen = false;
+                longFirstTouchBar = -1;
             }
 
             if (shortConfirm)
@@ -2502,6 +2553,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 shortTouchSeen = false;
                 shortCloseBackSeen = false;
                 shortBearishSeen = false;
+                shortFirstTouchBar = -1;
             }
         }
 
