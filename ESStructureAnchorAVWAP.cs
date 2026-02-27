@@ -2322,7 +2322,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 relevantAnchorValue = chooseFirst ? firstAnchorValue : secondAnchorValue;
             }
 
-            string biasAtAnchor = ComputeBiasAtAnchorText(longAnchor, shortAnchor);
+            string biasAtAnchor = ComputeBiasAtRelevantAnchorText(longAnchor, longAnchorUsable, shortAnchor, shortAnchorUsable);
             double sessionVwapNow = EnableSessionVwapAnchor ? GetSessionVwapValue() : double.NaN;
             string sessionVwapText = EnableSessionVwapAnchor
                 ? (double.IsNaN(sessionVwapNow) ? "NA" : sessionVwapNow.ToString("F2"))
@@ -2802,12 +2802,26 @@ namespace NinjaTrader.NinjaScript.Strategies
             return below >= (n / 2 + 1);
         }
 
-        private string ComputeBiasAtAnchorText(double longAnchor, double shortAnchor)
+        private string ComputeBiasAtRelevantAnchorText(double longAnchor, bool longAnchorUsable, double shortAnchor, bool shortAnchorUsable)
         {
-            if (!double.IsNaN(longAnchor) && MajorityApproachFromAbove(longAnchor))
-                return "Above→Support(Long bias)";
-            if (!double.IsNaN(shortAnchor) && MajorityApproachFromBelow(shortAnchor))
-                return "Below→Resistance(Short bias)";
+            bool firstValid = longAnchorUsable && !double.IsNaN(longAnchor);
+            bool secondValid = shortAnchorUsable && !double.IsNaN(shortAnchor);
+
+            if (!firstValid && !secondValid)
+                return "Neutral";
+
+            double relevantAnchor = firstValid && secondValid
+                ? (Math.Abs(Close[0] - longAnchor) <= Math.Abs(Close[0] - shortAnchor) ? longAnchor : shortAnchor)
+                : (firstValid ? longAnchor : shortAnchor);
+
+            bool fromAbove = MajorityApproachFromAbove(relevantAnchor);
+            bool fromBelow = MajorityApproachFromBelow(relevantAnchor);
+
+            if (fromBelow && !fromAbove)
+                return "Short bias (Below→Resistance)";
+            if (fromAbove && !fromBelow)
+                return "Long bias (Above→Support)";
+
             return "Neutral";
         }
 
