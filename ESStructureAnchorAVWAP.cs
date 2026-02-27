@@ -2201,22 +2201,36 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool secondAnchorValid = shortAnchorUsable && !double.IsNaN(shortAnchor);
             string firstAnchorTime = GetAnchorTimeLabel(longKind, longAnchorBar);
             string secondAnchorTime = GetAnchorTimeLabel(shortKind, shortAnchorBar);
+            string firstAnchorValue = firstAnchorValid ? longAnchor.ToString("F2") : "NA";
+            string secondAnchorValue = secondAnchorValid ? shortAnchor.ToString("F2") : "NA";
 
             string relevantAnchorTime = "NA";
+            string relevantAnchorValue = "NA";
             if (firstAnchorValid && !secondAnchorValid)
+            {
                 relevantAnchorTime = firstAnchorTime;
+                relevantAnchorValue = firstAnchorValue;
+            }
             else if (secondAnchorValid && !firstAnchorValid)
+            {
                 relevantAnchorTime = secondAnchorTime;
+                relevantAnchorValue = secondAnchorValue;
+            }
             else if (firstAnchorValid && secondAnchorValid)
-                relevantAnchorTime = Math.Abs(Close[0] - longAnchor) <= Math.Abs(Close[0] - shortAnchor)
-                    ? firstAnchorTime
-                    : secondAnchorTime;
+            {
+                bool chooseFirst = Math.Abs(Close[0] - longAnchor) <= Math.Abs(Close[0] - shortAnchor);
+                relevantAnchorTime = chooseFirst ? firstAnchorTime : secondAnchorTime;
+                relevantAnchorValue = chooseFirst ? firstAnchorValue : secondAnchorValue;
+            }
 
             string biasAtAnchor = ComputeBiasAtAnchorText(longAnchor, shortAnchor);
             string chartText =
                 "First Anchor Time: " + firstAnchorTime + "\n" +
+                "First Anchor AVWAP: " + firstAnchorValue + "\n" +
                 "Second Anchor Time: " + secondAnchorTime + "\n" +
+                "Second Anchor AVWAP: " + secondAnchorValue + "\n" +
                 "Relevant Anchor Time: " + relevantAnchorTime + "\n" +
+                "Relevant Anchor AVWAP: " + relevantAnchorValue + "\n" +
                 "Bias at Anchor: " + biasAtAnchor;
 
             Draw.TextFixed(this, AnchorStatusDrawTag, chartText, TextPosition.BottomLeft);
