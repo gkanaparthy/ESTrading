@@ -160,6 +160,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int pendingBreakoutShortSetBar = -1;
         private int pendingBreakoutLongAnchorBar = -1;
         private int pendingBreakoutShortAnchorBar = -1;
+        private int pendingBreakoutLongTouchBar = -1;
+        private int pendingBreakoutShortTouchBar = -1;
         private double pendingBreakoutLongAnchorPrice;
         private double pendingBreakoutShortAnchorPrice;
 
@@ -607,6 +609,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             pendingBreakoutShortSetBar = -1;
             pendingBreakoutLongAnchorBar = -1;
             pendingBreakoutShortAnchorBar = -1;
+            pendingBreakoutLongTouchBar = -1;
+            pendingBreakoutShortTouchBar = -1;
             pendingBreakoutLongAnchorPrice = 0;
             pendingBreakoutShortAnchorPrice = 0;
             pendingBreakoutLongTrigger = 0;
@@ -2659,16 +2663,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (longBreakoutReady)
             {
                 if (longBreakoutTriggered && CanEnterForAnchor(pendingBreakoutLongAnchorBar, true, pendingBreakoutLongAnchorPrice, shortAnchor))
-                    SubmitDirectionalEntry(true, pendingBreakoutLongAnchorPrice, pendingBreakoutLongAnchorBar);
+                    SubmitDirectionalEntry(true, pendingBreakoutLongAnchorPrice, pendingBreakoutLongAnchorBar, pendingBreakoutLongTouchBar);
                 pendingBreakoutLong = false;
+                pendingBreakoutLongTouchBar = -1;
             }
 
             if (shortBreakoutReady)
             {
                 // Guard: don't submit if a long entry was just placed this bar.
                 if (shortBreakoutTriggered && string.IsNullOrEmpty(pendingSignal) && CanEnterForAnchor(pendingBreakoutShortAnchorBar, false, pendingBreakoutShortAnchorPrice, longAnchor))
-                    SubmitDirectionalEntry(false, pendingBreakoutShortAnchorPrice, pendingBreakoutShortAnchorBar);
+                    SubmitDirectionalEntry(false, pendingBreakoutShortAnchorPrice, pendingBreakoutShortAnchorBar, pendingBreakoutShortTouchBar);
                 pendingBreakoutShort = false;
+                pendingBreakoutShortTouchBar = -1;
             }
 
             // With touch gating disabled, retest checks are not required for confirmation.
@@ -2696,6 +2702,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 pendingBreakoutLongSetBar = CurrentBar;
                 pendingBreakoutLongTrigger = High[0];
                 pendingBreakoutLongAnchorBar = longAnchorBar;
+                pendingBreakoutLongTouchBar = longFirstTouchBar >= 0 ? longFirstTouchBar : CurrentBar;
                 pendingBreakoutLongAnchorPrice = longAnchor;
                 longTouchSeen = false;
                 longCloseBackSeen = false;
@@ -2709,6 +2716,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 pendingBreakoutShortSetBar = CurrentBar;
                 pendingBreakoutShortTrigger = Low[0];
                 pendingBreakoutShortAnchorBar = shortAnchorBar;
+                pendingBreakoutShortTouchBar = shortFirstTouchBar >= 0 ? shortFirstTouchBar : CurrentBar;
                 pendingBreakoutShortAnchorPrice = shortAnchor;
                 shortTouchSeen = false;
                 shortCloseBackSeen = false;
@@ -2825,10 +2833,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             return true;
         }
 
-        private void SubmitDirectionalEntry(bool isLong, double anchorPrice, int anchorBar)
+        private void SubmitDirectionalEntry(bool isLong, double anchorPrice, int anchorBar, int touchBar)
         {
             int quantity = DefaultQuantity;
-            int stopTicks = ComputeSwingStopTicks(isLong);
+            int stopTicks = ComputeSwingStopTicks(isLong, touchBar);
             bool stopCompressed;
             if (!TryApplyRiskCap(ref quantity, ref stopTicks, out stopCompressed))
                 return;
@@ -2841,12 +2849,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             anchorTradesToday[key] = anchorTradesToday.TryGetValue(key, out int c) ? c + 1 : 1;
         }
 
-        private int ComputeSwingStopTicks(bool isLong)
+        private int ComputeSwingStopTicks(bool isLong, int touchBar)
         {
-            int lookback = Math.Min(ApproachLookbackBars + 2, CurrentBar);
+            // Stop window: from first touch/reject bar to current bar (setup-specific),
+            // instead of generic fixed lookback.
+            int startBar = (touchBar >= 0 && touchBar <= CurrentBar) ? touchBar : Math.Max(0, CurrentBar - (ApproachLookbackBars + 2));
+
             double stopPrice = isLong ? Low[0] : High[0];
-            for (int i = 1; i <= lookback; i++)
-                stopPrice = isLong ? Math.Min(stopPrice, Low[i]) : Math.Max(stopPrice, High[i]);
+            for (int bar = CurrentBar; bar >= startBar; bar--)
+            {
+                int barsAgo = CurrentBar - bar;
+                stopPrice = isLong ? Math.Min(stopPrice, Low[barsAgo]) : Math.Max(stopPrice, High[barsAgo]);
+            }
 
             double distPoints = isLong ? (Close[0] - stopPrice) : (stopPrice - Close[0]);
             distPoints = Math.Max(TickSize, Math.Min(MaxStopPoints, distPoints));
