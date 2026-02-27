@@ -194,11 +194,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BarsRequiredToTrade = 50;
 
                 AtrPeriod = 14;
-                AtrStopMultiple = 1.25;
-                TargetRMultiple = 2.0;
                 MinStopTicks = 8;
                 AnchorZoneTicks = 4;
-                ReclaimLookbackBars = 5;
                 TrendSlopeBars = 5;
                 ApproachLookbackBars = 5;
                 SignalCooldownBars = 5;
@@ -227,7 +224,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 GapThresholdPoints = 8.0;
                 UseTradeTimeWindows = true;
 
-                AdxChopThreshold = 18;
                 ExtremeAtrThreshold = 10.0;
                 MinAtrForEntry = 1.5;
                 DefendedLowImpulseAtr = 1.5;
@@ -270,7 +266,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                       " barsValue=" + BarsPeriod?.Value +
                       " tickSize=" + TickSize.ToString("F2") +
                       " atrPeriod=" + AtrPeriod +
-                      " atrStopMultiple=" + AtrStopMultiple.ToString("F2") +
                       " useSessionAtrForStops=" + UseSessionAtrForStops +
                       " minStopTicks=" + MinStopTicks +
                       " maxRisk=" + MaxRiskPerTradeDollars.ToString("F0") +
@@ -2681,16 +2676,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int AtrPeriod { get; set; }
 
         [NinjaScriptProperty]
-        [Range(0.5, 5.0)]
-        [Display(Name = "ATR Stop Multiple", GroupName = "Risk", Order = 2)]
-        public double AtrStopMultiple { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1.0, 5.0)]
-        [Display(Name = "Target R Multiple", GroupName = "Risk", Order = 3)]
-        public double TargetRMultiple { get; set; }
-
-        [NinjaScriptProperty]
         [Range(1, 100)]
         [Display(Name = "Min Stop Ticks", GroupName = "Risk", Order = 4)]
         public int MinStopTicks { get; set; }
@@ -2774,11 +2759,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool UseExtendedHours { get; set; }
 
         [NinjaScriptProperty]
-        [Range(5, 40)]
-        [Display(Name = "ADX Chop Threshold", GroupName = "Regime", Order = 20)]
-        public int AdxChopThreshold { get; set; }
-
-        [NinjaScriptProperty]
         [Range(2.0, 40.0)]
         [Display(Name = "Extreme ATR Threshold", GroupName = "Regime", Order = 21)]
         public double ExtremeAtrThreshold { get; set; }
@@ -2792,11 +2772,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(1, 10)]
         [Display(Name = "Trend Slope Bars", GroupName = "Regime", Order = 23)]
         public int TrendSlopeBars { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1, 5)]
-        [Display(Name = "Reclaim Lookback Bars", GroupName = "Entry", Order = 24)]
-        public int ReclaimLookbackBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(2, 20)]
