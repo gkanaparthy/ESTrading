@@ -132,6 +132,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private int signalCooldownRemaining;
         private readonly Dictionary<string, int> anchorTradesToday = new Dictionary<string, int>();
+        private readonly Dictionary<string, int> anchorReactionCountsToday = new Dictionary<string, int>();
         private bool longTouchSeen;
         private bool shortTouchSeen;
         private bool longCloseBackSeen;
@@ -589,6 +590,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             lastMissedShortReasonKey = string.Empty;
             signalCooldownRemaining = 0;
             anchorTradesToday.Clear();
+            anchorReactionCountsToday.Clear();
             longTouchSeen = false;
             shortTouchSeen = false;
             longCloseBackSeen = false;
@@ -1264,29 +1266,44 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return GetAvwapFromBar(structuralOverrideBarIndex, structuralOverridePrice);
             }
 
-            // TEMP PRIORITY ORDER (requested): LOD -> SessionVWAP -> RallyOrigin -> WTD
+            // Candidate ranking mode (proximity + historical reactions), no freshness bias.
+            kind = AnchorKind.LOD;
+            anchorBarIndex = -1;
+            double bestAnchor = double.NaN;
+            double bestScore = double.NegativeInfinity;
 
-            // 1) LOD first preference
             if (!lodInvalidated)
             {
-                kind = AnchorKind.LOD;
-                anchorBarIndex = dayLowBarIndex;
-                return GetAvwapFromBar(dayLowBarIndex, dayLow);
+                double lod = GetAvwapFromBar(dayLowBarIndex, dayLow);
+                if (!double.IsNaN(lod) && Close[0] > lod && !IsAnchorDegraded(lod))
+                {
+                    double score = ComputeAnchorRankScore(lod, AnchorKind.LOD, dayLowBarIndex);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestAnchor = lod;
+                        kind = AnchorKind.LOD;
+                        anchorBarIndex = dayLowBarIndex;
+                    }
+                }
             }
 
-            // 2) Session VWAP second fixed anchor
             if (EnableSessionVwapAnchor)
             {
                 double sessionVwap = GetSessionVwapValue();
                 if (!double.IsNaN(sessionVwap) && Close[0] > sessionVwap && !IsAnchorDegraded(sessionVwap))
                 {
-                    kind = AnchorKind.SessionVWAP;
-                    anchorBarIndex = sessionStartBarIndex;
-                    return sessionVwap;
+                    double score = ComputeAnchorRankScore(sessionVwap, AnchorKind.SessionVWAP, sessionStartBarIndex);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestAnchor = sessionVwap;
+                        kind = AnchorKind.SessionVWAP;
+                        anchorBarIndex = sessionStartBarIndex;
+                    }
                 }
             }
 
-            // 3) Impulse-origin long fallback
             if (EnableImpulseOriginAnchors && rallyOriginBarIndex >= 0)
             {
                 double rallyAvwap = GetAvwapFromBar(rallyOriginBarIndex, rallyOriginPrice);
@@ -1295,27 +1312,34 @@ namespace NinjaTrader.NinjaScript.Strategies
                     !IsAnchorDegraded(rallyAvwap) &&
                     !IsImpulseOriginDecisivelyBroken(true, rallyOriginBarIndex, rallyOriginPrice))
                 {
-                    kind = AnchorKind.RallyOrigin;
-                    anchorBarIndex = rallyOriginBarIndex;
-                    return rallyAvwap;
+                    double score = ComputeAnchorRankScore(rallyAvwap, AnchorKind.RallyOrigin, rallyOriginBarIndex);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestAnchor = rallyAvwap;
+                        kind = AnchorKind.RallyOrigin;
+                        anchorBarIndex = rallyOriginBarIndex;
+                    }
                 }
             }
 
-            // 4) WTD final fallback
             if (EnableWtdAnchor && wtdAnchorSet && wtdAnchorBarIndex >= 0)
             {
                 double wtd = GetWtdAvwap();
                 if (!double.IsNaN(wtd) && Close[0] > wtd && !IsAnchorDegraded(wtd))
                 {
-                    kind = AnchorKind.WeeklyOpen;
-                    anchorBarIndex = wtdAnchorBarIndex;
-                    return wtd;
+                    double score = ComputeAnchorRankScore(wtd, AnchorKind.WeeklyOpen, wtdAnchorBarIndex);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestAnchor = wtd;
+                        kind = AnchorKind.WeeklyOpen;
+                        anchorBarIndex = wtdAnchorBarIndex;
+                    }
                 }
             }
 
-            kind = AnchorKind.LOD;
-            anchorBarIndex = -1;
-            return double.NaN;
+            return bestAnchor;
         }
 
         private double GetShortAnchor(out AnchorKind kind, out int anchorBarIndex)
@@ -1368,35 +1392,58 @@ namespace NinjaTrader.NinjaScript.Strategies
                     !IsAnchorDegraded(wtdAvwap);
             }
 
-            // TEMP PRIORITY ORDER (requested): HOD -> SessionVWAP -> SelloffOrigin -> WTD
-            // If a higher-priority anchor is invalid/unusable, fall through to the next.
+            // Candidate ranking mode (proximity + historical reactions), no freshness bias.
             kind = AnchorKind.HOD;
             anchorBarIndex = -1;
             double selectedAnchor = double.NaN;
+            double bestScore = double.NegativeInfinity;
 
             if (hodCandidateValid)
             {
-                kind = AnchorKind.HOD;
-                anchorBarIndex = dayHighBarIndex;
-                selectedAnchor = hodAvwap;
+                double score = ComputeAnchorRankScore(hodAvwap, AnchorKind.HOD, dayHighBarIndex);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    kind = AnchorKind.HOD;
+                    anchorBarIndex = dayHighBarIndex;
+                    selectedAnchor = hodAvwap;
+                }
             }
-            else if (sessionVwapCandidateValid)
+
+            if (sessionVwapCandidateValid)
             {
-                kind = AnchorKind.SessionVWAP;
-                anchorBarIndex = sessionStartBarIndex;
-                selectedAnchor = sessionVwap;
+                double score = ComputeAnchorRankScore(sessionVwap, AnchorKind.SessionVWAP, sessionStartBarIndex);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    kind = AnchorKind.SessionVWAP;
+                    anchorBarIndex = sessionStartBarIndex;
+                    selectedAnchor = sessionVwap;
+                }
             }
-            else if (selloffCandidateValid)
+
+            if (selloffCandidateValid)
             {
-                kind = AnchorKind.SelloffOrigin;
-                anchorBarIndex = selloffOriginBarIndex;
-                selectedAnchor = selloffAvwap;
+                double score = ComputeAnchorRankScore(selloffAvwap, AnchorKind.SelloffOrigin, selloffOriginBarIndex);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    kind = AnchorKind.SelloffOrigin;
+                    anchorBarIndex = selloffOriginBarIndex;
+                    selectedAnchor = selloffAvwap;
+                }
             }
-            else if (wtdCandidateValid)
+
+            if (wtdCandidateValid)
             {
-                kind = AnchorKind.WeeklyOpen;
-                anchorBarIndex = wtdAnchorBarIndex;
-                selectedAnchor = wtdAvwap;
+                double score = ComputeAnchorRankScore(wtdAvwap, AnchorKind.WeeklyOpen, wtdAnchorBarIndex);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    kind = AnchorKind.WeeklyOpen;
+                    anchorBarIndex = wtdAnchorBarIndex;
+                    selectedAnchor = wtdAvwap;
+                }
             }
 
             if (EnableAnchorLogging)
@@ -2280,13 +2327,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             string sessionVwapText = EnableSessionVwapAnchor
                 ? (double.IsNaN(sessionVwapNow) ? "NA" : sessionVwapNow.ToString("F2"))
                 : "Disabled";
+            int firstReactions = (longAnchorBar >= 0) ? GetAnchorReactionCount(longKind, longAnchorBar) : 0;
+            int secondReactions = (shortAnchorBar >= 0) ? GetAnchorReactionCount(shortKind, shortAnchorBar) : 0;
 
             string chartText =
                 "First Anchor Time - First Anchor AVWAP: " + firstAnchorTime + " - " + firstAnchorValue + "\n" +
                 "Second Anchor Time - Second Anchor AVWAP: " + secondAnchorTime + " - " + secondAnchorValue + "\n" +
                 "Session VWAP Value: " + sessionVwapText + "\n" +
                 "Relevant Anchor Time - Relevant Anchor AVWAP: " + relevantAnchorTime + " - " + relevantAnchorValue + "\n" +
-                "Bias at Anchor: " + biasAtAnchor;
+                "Bias at Anchor: " + biasAtAnchor + "\n" +
+                "Anchor Reactions (First/Second): " + firstReactions + " / " + secondReactions;
 
             Draw.TextFixed(this, AnchorStatusDrawTag, chartText, TextPosition.BottomLeft);
             DrawAnchorOriginMarkers(longKind, longAnchor, longAnchorBar, shortKind, shortAnchor, shortAnchorBar);
@@ -2628,6 +2678,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 pendingBreakoutLongTrigger = High[0];
                 pendingBreakoutLongAnchorBar = longAnchorBar;
                 pendingBreakoutLongAnchorPrice = longAnchor;
+                IncrementAnchorReactionCount(longKind, longAnchorBar);
                 longTouchSeen = false;
                 longCloseBackSeen = false;
                 longBullishSeen = false;
@@ -2641,11 +2692,44 @@ namespace NinjaTrader.NinjaScript.Strategies
                 pendingBreakoutShortTrigger = Low[0];
                 pendingBreakoutShortAnchorBar = shortAnchorBar;
                 pendingBreakoutShortAnchorPrice = shortAnchor;
+                IncrementAnchorReactionCount(shortKind, shortAnchorBar);
                 shortTouchSeen = false;
                 shortCloseBackSeen = false;
                 shortBearishSeen = false;
                 shortFirstTouchBar = -1;
             }
+        }
+
+        private string BuildAnchorReactionKey(AnchorKind kind, int anchorBar)
+        {
+            return kind + ":" + anchorBar;
+        }
+
+        private int GetAnchorReactionCount(AnchorKind kind, int anchorBar)
+        {
+            string key = BuildAnchorReactionKey(kind, anchorBar);
+            return anchorReactionCountsToday.TryGetValue(key, out int count) ? count : 0;
+        }
+
+        private void IncrementAnchorReactionCount(AnchorKind kind, int anchorBar)
+        {
+            if (anchorBar < 0)
+                return;
+
+            string key = BuildAnchorReactionKey(kind, anchorBar);
+            anchorReactionCountsToday[key] = anchorReactionCountsToday.TryGetValue(key, out int count) ? count + 1 : 1;
+        }
+
+        private double ComputeAnchorRankScore(double anchorPrice, AnchorKind kind, int anchorBar)
+        {
+            if (double.IsNaN(anchorPrice))
+                return double.NegativeInfinity;
+
+            double ticksAway = Math.Abs(Close[0] - anchorPrice) / TickSize;
+            double proximityScore = 1.0 / (1.0 + ticksAway);
+            double reactionScore = 0.35 * GetAnchorReactionCount(kind, anchorBar);
+
+            return proximityScore + reactionScore;
         }
 
         private int GetAnchorTradeCount(int anchorBar, bool isLong)
