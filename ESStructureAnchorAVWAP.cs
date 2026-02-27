@@ -2476,8 +2476,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             double touchTol = TouchToleranceTicks * TickSize;
-            bool longTouch = longAnchorUsable && !double.IsNaN(longAnchor) && Low[0] <= longAnchor + touchTol;
-            bool shortTouch = shortAnchorUsable && !double.IsNaN(shortAnchor) && High[0] >= shortAnchor - touchTol;
+            // Touch = bar actually reaches the anchor zone (within tolerance on BOTH sides).
+            // Without the floor/ceiling check, a bar 50 points through the anchor
+            // would still register as a "touch," which is really a breakdown, not a bounce setup.
+            bool longTouch = longAnchorUsable && !double.IsNaN(longAnchor) &&
+                             Low[0] <= longAnchor + touchTol && Low[0] >= longAnchor - touchTol;
+            bool shortTouch = shortAnchorUsable && !double.IsNaN(shortAnchor) &&
+                              High[0] >= shortAnchor - touchTol && High[0] <= shortAnchor + touchTol;
 
             if (longTouch)
             {
@@ -2508,16 +2513,35 @@ namespace NinjaTrader.NinjaScript.Strategies
                     shortBearishSeen = true;
             }
 
-            if (pendingBreakoutLong && CurrentBar > pendingBreakoutLongSetBar)
+            // Process pending breakouts. Only one entry per bar — if both fire,
+            // prefer the one whose trigger was broken by a larger margin.
+            bool longBreakoutReady = pendingBreakoutLong && CurrentBar > pendingBreakoutLongSetBar;
+            bool shortBreakoutReady = pendingBreakoutShort && CurrentBar > pendingBreakoutShortSetBar;
+            bool longBreakoutTriggered = longBreakoutReady && High[0] > pendingBreakoutLongTrigger;
+            bool shortBreakoutTriggered = shortBreakoutReady && Low[0] < pendingBreakoutShortTrigger;
+
+            if (longBreakoutTriggered && shortBreakoutTriggered)
             {
-                if (High[0] > pendingBreakoutLongTrigger && CanEnterForAnchor(pendingBreakoutLongAnchorBar, true, pendingBreakoutLongAnchorPrice, shortAnchor))
+                // Both triggered same bar — pick the stronger breakout, skip the other.
+                double longMargin = High[0] - pendingBreakoutLongTrigger;
+                double shortMargin = pendingBreakoutShortTrigger - Low[0];
+                if (longMargin >= shortMargin)
+                    shortBreakoutTriggered = false;
+                else
+                    longBreakoutTriggered = false;
+            }
+
+            if (longBreakoutReady)
+            {
+                if (longBreakoutTriggered && CanEnterForAnchor(pendingBreakoutLongAnchorBar, true, pendingBreakoutLongAnchorPrice, shortAnchor))
                     SubmitDirectionalEntry(true, pendingBreakoutLongAnchorPrice, pendingBreakoutLongAnchorBar);
                 pendingBreakoutLong = false;
             }
 
-            if (pendingBreakoutShort && CurrentBar > pendingBreakoutShortSetBar)
+            if (shortBreakoutReady)
             {
-                if (Low[0] < pendingBreakoutShortTrigger && CanEnterForAnchor(pendingBreakoutShortAnchorBar, false, pendingBreakoutShortAnchorPrice, longAnchor))
+                // Guard: don't submit if a long entry was just placed this bar.
+                if (shortBreakoutTriggered && string.IsNullOrEmpty(pendingSignal) && CanEnterForAnchor(pendingBreakoutShortAnchorBar, false, pendingBreakoutShortAnchorPrice, longAnchor))
                     SubmitDirectionalEntry(false, pendingBreakoutShortAnchorPrice, pendingBreakoutShortAnchorBar);
                 pendingBreakoutShort = false;
             }
@@ -2529,6 +2553,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             bool longConfirm = longTouchSeen && longCloseBackSeen && longBullishSeen && longRetestSatisfied && MajorityApproachFromAbove(longAnchor);
             bool shortConfirm = shortTouchSeen && shortCloseBackSeen && shortBearishSeen && shortRetestSatisfied && MajorityApproachFromBelow(shortAnchor);
+
+            // Only one confirmation per bar. If both fire, prefer the one with
+            // the closer anchor (more likely to be the actionable setup).
+            if (longConfirm && shortConfirm)
+            {
+                double longDist = Math.Abs(Close[0] - longAnchor);
+                double shortDist = Math.Abs(Close[0] - shortAnchor);
+                if (longDist <= shortDist)
+                    shortConfirm = false;
+                else
+                    longConfirm = false;
+            }
 
             if (longConfirm)
             {
