@@ -129,6 +129,19 @@ namespace NinjaTrader.NinjaScript.Strategies
         private string lastShortAnchorDecisionKey = string.Empty;
         private string lastMissedShortReasonKey = string.Empty;
 
+        private int signalCooldownRemaining;
+        private readonly Dictionary<string, int> anchorTradesToday = new Dictionary<string, int>();
+        private bool longTouchSeen;
+        private bool shortTouchSeen;
+        private int longFirstTouchBar = -1;
+        private int shortFirstTouchBar = -1;
+        private bool pendingBreakoutLong;
+        private bool pendingBreakoutShort;
+        private double pendingBreakoutTrigger;
+        private int pendingBreakoutSetBar = -1;
+        private int pendingBreakoutAnchorBar = -1;
+        private double pendingBreakoutAnchorPrice;
+
         // Persistent impulse-origin anchors (start candle of sharp directional move)
         private int rallyOriginBarIndex = -1;
         private double rallyOriginPrice;
@@ -172,13 +185,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 AtrPeriod = 14;
                 AtrStopMultiple = 1.25;
-                TargetRMultiple = 2.0;
+                TargetRMultiple = 1.0;
                 MinStopTicks = 8;
                 AnchorZoneTicks = 4;
                 ReclaimLookbackBars = 5;
                 TrendSlopeBars = 5;
+                ApproachLookbackBars = 5;
+                SignalCooldownBars = 5;
+                TouchToleranceTicks = 2;
+                MaxStopPoints = 5.0;
+                AnchorProximityAtrMultiple = 2.0;
 
-                MaxOpportunitiesPerDay = 6;
+                MaxOpportunitiesPerDay = 3;
                 MaxConsecutiveLosses = 2;
                 DailyStopR = -2.0;
                 MaxRiskPerTradeDollars = 400.0;
@@ -199,7 +217,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseTradeTimeWindows = true;
 
                 AdxChopThreshold = 18;
-                ExtremeAtrThreshold = 12.0;
+                ExtremeAtrThreshold = 10.0;
                 MinAtrForEntry = 1.5;
                 DefendedLowImpulseAtr = 1.5;
                 DefendedLowMaxBars = 10;
@@ -364,330 +382,28 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!string.IsNullOrEmpty(pendingSignal))
                 return;
 
+            if (signalCooldownRemaining > 0)
+                signalCooldownRemaining--;
+
             if (!inTradeWindow || !CanSubmitNewTrade())
                 return;
 
-            if (double.IsNaN(atr[0]) || double.IsNaN(ema[0]) || double.IsNaN(adx[0]) || double.IsNaN(volSma[0]))
+            if (double.IsNaN(atr[0]) || atr[0] < MinAtrForEntry || atr[0] > ExtremeAtrThreshold)
                 return;
 
-            if (atr[0] < MinAtrForEntry || atr[0] > ExtremeAtrThreshold)
-                return;
-
-            bool bullishTrend = ema[0] > ema[Math.Min(TrendSlopeBars, CurrentBar)] && Close[0] > ema[0];
-            bool bearishTrend = ema[0] < ema[Math.Min(TrendSlopeBars, CurrentBar)] && Close[0] < ema[0];
-           // if (!bullishTrend && !bearishTrend)
-             //   return;
-
-            // Adaptive zone sizing: keep baseline from AnchorZoneTicks but loosen slightly
-            // in higher ATR regimes to avoid missing valid wick/reject touches.
-            int dynamicZoneTicks = Math.Max(
-                AnchorZoneTicks,
-                Math.Min(8, (int)Math.Round((atr[0] / TickSize) * 0.15)));
-            double zone = dynamicZoneTicks * TickSize;
-            double stopAtr = GetStopAtrValue();
-            double rawStop = Math.Max(AtrStopMultiple * stopAtr, MinStopTicks * TickSize);
-            int baseStopTicks = Math.Max(MinStopTicks, (int)Math.Ceiling(rawStop / TickSize));
-
-            bool lowAdxRegime = adx[0] < AdxChopThreshold;
-            bool longChopBlockedByRegime = lowAdxRegime && longAnchorChoppy;
-            bool shortChopBlockedByRegime = lowAdxRegime && shortAnchorChoppy;
-
-            bool longWickReclaim =
-                !double.IsNaN(longAnchor) &&
-                Low[0] <= longAnchor &&
-                Close[0] > longAnchor;
-
-            bool shortWickReject =
-                !double.IsNaN(shortAnchor) &&
-                High[0] >= shortAnchor &&
-                Close[0] < shortAnchor;
-
-            bool longSignal = longAnchorUsable &&
-                              !longChopBlockedByRegime &&
-                              (HasReclaimAbove(longAnchor, ReclaimLookbackBars) || longWickReclaim) &&
-                              Low[0] <= longAnchor + zone &&
-                              Close[0] > Open[0];
-
-            bool shortAnchorSignalEligible =
-                shortKind == AnchorKind.HOD ||
-                shortKind == AnchorKind.StructuralBear ||
-                shortKind == AnchorKind.SelloffOrigin ||
-                shortKind == AnchorKind.WeeklyOpen;
-
-            bool shortSignal = shortAnchorSignalEligible &&
-                               shortAnchorUsable &&
-                               !shortChopBlockedByRegime &&
-                               (HasRejectBelow(shortAnchor, ReclaimLookbackBars) || shortWickReject) &&
-                               High[0] >= shortAnchor - zone &&
-                               Close[0] < Open[0];
-
-            if (EnableAnchorLogging)
+            if (longAnchorUsable && shortAnchorUsable && Math.Abs(longAnchor - shortAnchor) <= (AnchorProximityAtrMultiple * atr[0]))
             {
-                double wtdVal = GetWtdAvwap();
-                string wtdStr = double.IsNaN(wtdVal) ? "NA" : wtdVal.ToString("F2");
-
-                // Long sub-conditions (broken out individually)
-                bool lUsable   = longAnchorUsable;
-                bool lAdxChop  = longChopBlockedByRegime;
-                bool lReclaim  = !double.IsNaN(longAnchor) && HasReclaimAbove(longAnchor, ReclaimLookbackBars);
-                bool lWick     = longWickReclaim;
-                bool lZone     = !double.IsNaN(longAnchor) && Low[0] <= longAnchor + zone;
-                bool lCandle   = Close[0] > Open[0];
-
-                // Short sub-conditions (broken out individually)
-                bool sEligible = shortAnchorSignalEligible;
-                bool sUsable   = shortAnchorUsable;
-                bool sAdxChop  = shortChopBlockedByRegime;
-                bool sReject   = !double.IsNaN(shortAnchor) && HasRejectBelow(shortAnchor, ReclaimLookbackBars);
-                bool sWick     = shortWickReject;
-                bool sZone     = !double.IsNaN(shortAnchor) && High[0] >= shortAnchor - zone;
-                bool sCandle   = Close[0] < Open[0];
-
-                string lodStr  = double.IsNaN(longAnchor)  ? "NA" : longAnchor.ToString("F2");
-                string hodStr  = double.IsNaN(shortAnchor) ? "NA" : shortAnchor.ToString("F2");
-
-                PrintWithContext("SIGNAL_CHECK" +
-                      " lod=" + lodStr + " hod=" + hodStr + " wtd=" + wtdStr +
-                      " trend=" + (bullishTrend ? "BULL" : "BEAR") +
-                      " | LONG: usable=" + lUsable +
-                      " adxChopBlock=" + lAdxChop +
-                      " reclaim=" + lReclaim +
-                      " wick=" + lWick +
-                      " zone=" + lZone +
-                      " candle=" + lCandle +
-                      " trend=" + bullishTrend +
-                      " =>" + longSignal +
-                      " | SHORT: eligible=" + sEligible +
-                      " usable=" + sUsable +
-                      " adxChopBlock=" + sAdxChop +
-                      " reject=" + sReject +
-                      " wick=" + sWick +
-                      " zone=" + sZone +
-                      " candle=" + sCandle +
-                      " trend=" + bearishTrend +
-                      " zoneTicks=" + dynamicZoneTicks +
-                      " =>" + shortSignal);
-
-                // Phase 2 diagnostics: explicit missed-short reasons for real examples
-                if (shortAnchorSignalEligible && !shortSignal)
-                {
-                    string reason = "";
-                    if (!shortAnchorUsable) reason += "anchorNotUsable;";
-                    if (shortChopBlockedByRegime) reason += "adxChopBlocked;";
-                    if (!(sReject || sWick)) reason += "noRejectOrWick;";
-                    if (!sZone) reason += "noZoneTouch;";
-                    if (!sCandle) reason += "noBearCandle;";
-                    if (string.IsNullOrEmpty(reason)) reason = "unknownGate";
-
-                    string missedKey =
-                        Time[0].Ticks + "|" + shortKind + "|" + reason + "|" +
-                        (double.IsNaN(shortAnchor) ? "NA" : shortAnchor.ToString("F2"));
-
-                    if (!string.Equals(lastMissedShortReasonKey, missedKey, StringComparison.Ordinal))
-                    {
-                        PrintWithContext("MISSED_SHORT" +
-                              " kind=" + shortKind +
-                              " anchor=" + (double.IsNaN(shortAnchor) ? "NA" : shortAnchor.ToString("F2")) +
-                              " close=" + Close[0].ToString("F2") +
-                              " high=" + High[0].ToString("F2") +
-                              " low=" + Low[0].ToString("F2") +
-                              " reasons=" + reason +
-                              " reclaimLookback=" + ReclaimLookbackBars +
-                              " zoneTicks=" + dynamicZoneTicks);
-
-                        lastMissedShortReasonKey = missedKey;
-                    }
-                }
+                double higher = Math.Max(longAnchor, shortAnchor);
+                double lower = Math.Min(longAnchor, shortAnchor);
+                if (MajorityApproachFromBelow(higher))
+                    shortAnchor = higher;
+                if (MajorityApproachFromAbove(lower))
+                    longAnchor = lower;
             }
 
-            if (longSignal && shortSignal)
-            {
-                double longDistance = Math.Abs(Close[0] - longAnchor);
-                double shortDistance = Math.Abs(Close[0] - shortAnchor);
+            EvaluateAnchorRetestBreakout(nowCme, longKind, longAnchor, longAnchorBar, longAnchorUsable, shortKind, shortAnchor, shortAnchorBar, shortAnchorUsable);
+            return;
 
-                // Resolve conflicts deterministically so we always keep one candidate signal.
-                // Prefer trend-aligned side first; otherwise prefer the farther anchor as requested.
-                bool keepLong;
-                if (bullishTrend && !bearishTrend)
-                    keepLong = true;
-                else if (bearishTrend && !bullishTrend)
-                    keepLong = false;
-                else
-                    keepLong = longDistance >= shortDistance;
-
-                longSignal = keepLong;
-                shortSignal = !keepLong;
-
-                if (EnableAnchorLogging)
-                {
-                    PrintWithContext("DUAL_SIGNAL_RESOLVED chosen=" + (keepLong ? "LONG" : "SHORT") +
-                          " longDistance=" + longDistance.ToString("F2") +
-                          " shortDistance=" + shortDistance.ToString("F2"));
-                }
-            }
-
-            if (longSignal )//&& bullishTrend)
-            {
-                int quantity = DefaultQuantity;
-                bool isTierB = false;
-                if (longKind == AnchorKind.LOD)
-                {
-                    LodTier tier = DetermineLodTier(longAnchorBar);
-                    if (tier == LodTier.TierB)
-                    {
-                        isTierB = true;
-                        if (tierBAttemptUsed)
-                        {
-                            if (EnableAnchorLogging)
-                            {
-                                PrintWithContext("SKIP_TIERB_ALREADY_USED side=LONG" +
-                                      " anchorKind=" + longKind +
-                                      " anchor=" + longAnchor.ToString("F2"));
-                            }
-                            return;
-                        }
-
-                        quantity = Math.Max(1, (int)Math.Floor(DefaultQuantity * 0.5));
-                    }
-                }
-
-                int stopTicks = baseStopTicks;
-                int originalStopTicks = stopTicks;
-                bool stopCompressed = false;
-                if (!TryApplyRiskCap(ref quantity, ref stopTicks, out stopCompressed))
-                {
-                    PrintWithContext("SKIP_RISK_CAP side=LONG stopTicks=" + stopTicks +
-                          " baseStopTicks=" + baseStopTicks +
-                          " rawStopPoints=" + rawStop.ToString("F2") +
-                          " atr=" + atr[0].ToString("F2") +
-                          " stopAtr=" + stopAtr.ToString("F2") +
-                          " quantity=" + quantity +
-                          " maxRisk=" + MaxRiskPerTradeDollars.ToString("F0"));
-                    return;
-                }
-
-                if (stopCompressed && originalStopTicks > 0)
-                {
-                    double compressionFraction = (originalStopTicks - stopTicks) / (double)originalStopTicks;
-                    if (compressionFraction > MaxStopCompressionFraction)
-                    {
-                        PrintWithContext("SKIP_STOP_COMPRESSION side=LONG fromTicks=" + originalStopTicks +
-                              " toTicks=" + stopTicks +
-                              " compressionFrac=" + compressionFraction.ToString("F2") +
-                              " maxCompressionFrac=" + MaxStopCompressionFraction.ToString("F2"));
-                        return;
-                    }
-                }
-
-                if (stopCompressed && EnableAnchorLogging)
-                {
-                    PrintWithContext("RISK_CAP_STOP_COMPRESSED side=LONG fromTicks=" + originalStopTicks +
-                          " toTicks=" + stopTicks +
-                          " rawStopPoints=" + rawStop.ToString("F2") +
-                          " atr=" + atr[0].ToString("F2") +
-                          " stopAtr=" + stopAtr.ToString("F2") +
-                          " quantity=" + quantity +
-                          " maxRisk=" + MaxRiskPerTradeDollars.ToString("F0"));
-                }
-
-                int targetTicks = Math.Max(stopTicks + 1, (int)Math.Round(stopTicks * TargetRMultiple));
-                if (EnableAnchorLogging)
-                {
-                    PrintWithContext("ENTRY_SIGNAL side=LONG anchorKind=" + longKind +
-                          " anchor=" + longAnchor.ToString("F2") +
-                          " anchorBar=" + longAnchorBar +
-                          " atr=" + atr[0].ToString("F2") +
-                          " stopAtr=" + stopAtr.ToString("F2") +
-                          " rawStopPoints=" + rawStop.ToString("F2") +
-                          " stopTicks=" + stopTicks +
-                          " targetTicks=" + targetTicks +
-                          " quantity=" + quantity +
-                          " tierB=" + isTierB);
-                }
-
-                SubmitEntry(true, quantity, stopTicks, targetTicks, isTierB);
-            }
-            else if (shortSignal )//&& bearishTrend)
-            {
-                int quantity = DefaultQuantity;
-                bool isTierB = false;
-                if (shortKind == AnchorKind.HOD)
-                {
-                    LodTier tier = DetermineHodTier(shortAnchorBar);
-                    if (tier == LodTier.TierB)
-                    {
-                        isTierB = true;
-                        if (tierBAttemptUsed)
-                        {
-                            if (EnableAnchorLogging)
-                            {
-                                PrintWithContext("SKIP_TIERB_ALREADY_USED side=SHORT" +
-                                      " anchorKind=" + shortKind +
-                                      " anchor=" + shortAnchor.ToString("F2"));
-                            }
-                            return;
-                        }
-
-                        quantity = Math.Max(1, (int)Math.Floor(DefaultQuantity * 0.5));
-                    }
-                }
-
-                int stopTicks = baseStopTicks;
-                int originalStopTicks = stopTicks;
-                bool stopCompressed = false;
-                if (!TryApplyRiskCap(ref quantity, ref stopTicks, out stopCompressed))
-                {
-                    PrintWithContext("SKIP_RISK_CAP side=SHORT stopTicks=" + stopTicks +
-                          " baseStopTicks=" + baseStopTicks +
-                          " rawStopPoints=" + rawStop.ToString("F2") +
-                          " atr=" + atr[0].ToString("F2") +
-                          " stopAtr=" + stopAtr.ToString("F2") +
-                          " quantity=" + quantity +
-                          " maxRisk=" + MaxRiskPerTradeDollars.ToString("F0"));
-                    return;
-                }
-
-                if (stopCompressed && originalStopTicks > 0)
-                {
-                    double compressionFraction = (originalStopTicks - stopTicks) / (double)originalStopTicks;
-                    if (compressionFraction > MaxStopCompressionFraction)
-                    {
-                        PrintWithContext("SKIP_STOP_COMPRESSION side=SHORT fromTicks=" + originalStopTicks +
-                              " toTicks=" + stopTicks +
-                              " compressionFrac=" + compressionFraction.ToString("F2") +
-                              " maxCompressionFrac=" + MaxStopCompressionFraction.ToString("F2"));
-                        return;
-                    }
-                }
-
-                if (stopCompressed && EnableAnchorLogging)
-                {
-                    PrintWithContext("RISK_CAP_STOP_COMPRESSED side=SHORT fromTicks=" + originalStopTicks +
-                          " toTicks=" + stopTicks +
-                          " rawStopPoints=" + rawStop.ToString("F2") +
-                          " atr=" + atr[0].ToString("F2") +
-                          " stopAtr=" + stopAtr.ToString("F2") +
-                          " quantity=" + quantity +
-                          " maxRisk=" + MaxRiskPerTradeDollars.ToString("F0"));
-                }
-
-                int targetTicks = Math.Max(stopTicks + 1, (int)Math.Round(stopTicks * TargetRMultiple));
-                if (EnableAnchorLogging)
-                {
-                    PrintWithContext("ENTRY_SIGNAL side=SHORT anchorKind=" + shortKind +
-                          " anchor=" + shortAnchor.ToString("F2") +
-                          " anchorBar=" + shortAnchorBar +
-                          " atr=" + atr[0].ToString("F2") +
-                          " stopAtr=" + stopAtr.ToString("F2") +
-                          " rawStopPoints=" + rawStop.ToString("F2") +
-                          " stopTicks=" + stopTicks +
-                          " targetTicks=" + targetTicks +
-                          " quantity=" + quantity +
-                          " tierB=" + isTierB);
-                }
-
-                SubmitEntry(false, quantity, stopTicks, targetTicks, isTierB);
-            }
         }
 
         protected override void OnExecutionUpdate(
@@ -862,6 +578,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             lastAnchorStateKey = string.Empty;
             lastShortAnchorDecisionKey = string.Empty;
             lastMissedShortReasonKey = string.Empty;
+            signalCooldownRemaining = 0;
+            anchorTradesToday.Clear();
+            longTouchSeen = false;
+            shortTouchSeen = false;
+            longFirstTouchBar = -1;
+            shortFirstTouchBar = -1;
+            pendingBreakoutLong = false;
+            pendingBreakoutShort = false;
+            pendingBreakoutSetBar = -1;
+            pendingBreakoutAnchorBar = -1;
+            pendingBreakoutAnchorPrice = 0;
+            pendingBreakoutTrigger = 0;
             sessionTrueRangeWindow.Clear();
             sessionTrueRangeSum = 0;
             sessionAtrForStops = 0;
@@ -1060,10 +788,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool IsInTradeWindow(int time)
         {
-            if (!UseTradeTimeWindows)
-                return true;
-
-            // Full RTH window
+            // Forced RTH-only behavior
             return time >= CmeMorningWindowStart && time <= CmeMorningWindowEnd;
         }
 
@@ -1211,10 +936,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool CanSubmitNewTrade()
         {
-            if (opportunitiesToday >= MaxOpportunitiesPerDay)
+            if (opportunitiesToday >= Math.Min(MaxOpportunitiesPerDay, 3))
                 return false;
 
             if (consecutiveLosses >= MaxConsecutiveLosses)
+                return false;
+
+            if (signalCooldownRemaining > 0)
                 return false;
 
             if (dailyR <= DailyStopR)
@@ -2460,10 +2188,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                     ? firstAnchorTime
                     : secondAnchorTime;
 
+            string biasAtAnchor = ComputeBiasAtAnchorText(longAnchor, shortAnchor);
             string chartText =
                 "First Anchor Time: " + firstAnchorTime + "\n" +
                 "Second Anchor Time: " + secondAnchorTime + "\n" +
-                "Relevant Anchor Time: " + relevantAnchorTime;
+                "Relevant Anchor Time: " + relevantAnchorTime + "\n" +
+                "Bias at Anchor: " + biasAtAnchor;
 
             Draw.TextFixed(this, AnchorStatusDrawTag, chartText, TextPosition.BottomLeft);
             DrawAnchorOriginMarkers(longKind, longAnchor, longAnchorBar, shortKind, shortAnchor, shortAnchorBar);
@@ -2676,6 +2406,121 @@ namespace NinjaTrader.NinjaScript.Strategies
                 : "SECOND " + shortKind + " from " + GetAnchorOriginCmeText(shortAnchorBar) + " @" + shortAnchor.ToString("F2");
         }
 
+        private void EvaluateAnchorRetestBreakout(int nowCme, AnchorKind longKind, double longAnchor, int longAnchorBar, bool longAnchorUsable, AnchorKind shortKind, double shortAnchor, int shortAnchorBar, bool shortAnchorUsable)
+        {
+            double touchTol = TouchToleranceTicks * TickSize;
+            bool longTouch = longAnchorUsable && !double.IsNaN(longAnchor) && Low[0] <= longAnchor + touchTol;
+            bool shortTouch = shortAnchorUsable && !double.IsNaN(shortAnchor) && High[0] >= shortAnchor - touchTol;
+
+            if (!longTouchSeen && longTouch) { longTouchSeen = true; longFirstTouchBar = CurrentBar; }
+            if (!shortTouchSeen && shortTouch) { shortTouchSeen = true; shortFirstTouchBar = CurrentBar; }
+
+            if (pendingBreakoutLong && CurrentBar > pendingBreakoutSetBar)
+            {
+                if (High[0] > pendingBreakoutTrigger && CanEnterForAnchor(pendingBreakoutAnchorBar, true, pendingBreakoutAnchorPrice, shortAnchor))
+                    SubmitDirectionalEntry(true, pendingBreakoutAnchorPrice);
+                pendingBreakoutLong = false;
+            }
+
+            if (pendingBreakoutShort && CurrentBar > pendingBreakoutSetBar)
+            {
+                if (Low[0] < pendingBreakoutTrigger && CanEnterForAnchor(pendingBreakoutAnchorBar, false, pendingBreakoutAnchorPrice, longAnchor))
+                    SubmitDirectionalEntry(false, pendingBreakoutAnchorPrice);
+                pendingBreakoutShort = false;
+            }
+
+            bool longConfirm = longTouchSeen && longTouch && CurrentBar > longFirstTouchBar && Close[0] > longAnchor && Close[0] > Open[0] && MajorityApproachFromAbove(longAnchor);
+            bool shortConfirm = shortTouchSeen && shortTouch && CurrentBar > shortFirstTouchBar && Close[0] < shortAnchor && Close[0] < Open[0] && MajorityApproachFromBelow(shortAnchor);
+
+            if (longConfirm)
+            {
+                pendingBreakoutLong = true;
+                pendingBreakoutSetBar = CurrentBar;
+                pendingBreakoutTrigger = High[0];
+                pendingBreakoutAnchorBar = longAnchorBar;
+                pendingBreakoutAnchorPrice = longAnchor;
+            }
+
+            if (shortConfirm)
+            {
+                pendingBreakoutShort = true;
+                pendingBreakoutSetBar = CurrentBar;
+                pendingBreakoutTrigger = Low[0];
+                pendingBreakoutAnchorBar = shortAnchorBar;
+                pendingBreakoutAnchorPrice = shortAnchor;
+            }
+        }
+
+        private bool CanEnterForAnchor(int anchorBar, bool isLong, double ownAnchor, double oppositeAnchor)
+        {
+            if (anchorBar < 0)
+                return false;
+
+            string key = (isLong ? "L:" : "S:") + anchorBar;
+            if (anchorTradesToday.TryGetValue(key, out int count) && count >= 2)
+                return false;
+
+            if (!double.IsNaN(oppositeAnchor) && Math.Abs(ownAnchor - oppositeAnchor) <= AnchorProximityAtrMultiple * atr[0])
+                return false;
+
+            return true;
+        }
+
+        private void SubmitDirectionalEntry(bool isLong, double anchorPrice)
+        {
+            int quantity = DefaultQuantity;
+            int stopTicks = ComputeSwingStopTicks(isLong);
+            bool stopCompressed;
+            if (!TryApplyRiskCap(ref quantity, ref stopTicks, out stopCompressed))
+                return;
+
+            int targetTicks = Math.Max(stopTicks + 1, (int)Math.Round(stopTicks * TargetRMultiple));
+            SubmitEntry(isLong, quantity, stopTicks, targetTicks, false);
+
+            string key = (isLong ? "L:" : "S:") + pendingBreakoutAnchorBar;
+            anchorTradesToday[key] = anchorTradesToday.TryGetValue(key, out int c) ? c + 1 : 1;
+        }
+
+        private int ComputeSwingStopTicks(bool isLong)
+        {
+            int lookback = Math.Min(ApproachLookbackBars + 2, CurrentBar);
+            double stopPrice = isLong ? Low[0] : High[0];
+            for (int i = 1; i <= lookback; i++)
+                stopPrice = isLong ? Math.Min(stopPrice, Low[i]) : Math.Max(stopPrice, High[i]);
+
+            double distPoints = isLong ? (Close[0] - stopPrice) : (stopPrice - Close[0]);
+            distPoints = Math.Max(TickSize, Math.Min(MaxStopPoints, distPoints));
+            return Math.Max(MinStopTicks, (int)Math.Ceiling(distPoints / TickSize));
+        }
+
+        private bool MajorityApproachFromAbove(double anchor)
+        {
+            int n = Math.Min(ApproachLookbackBars, CurrentBar);
+            if (n <= 0) return false;
+            int above = 0;
+            for (int i = 1; i <= n; i++) if (Close[i] > anchor) above++;
+            return above >= (n / 2 + 1);
+        }
+
+        private bool MajorityApproachFromBelow(double anchor)
+        {
+            int n = Math.Min(ApproachLookbackBars, CurrentBar);
+            if (n <= 0) return false;
+            int below = 0;
+            for (int i = 1; i <= n; i++) if (Close[i] < anchor) below++;
+            return below >= (n / 2 + 1);
+        }
+
+        private string ComputeBiasAtAnchorText(double longAnchor, double shortAnchor)
+        {
+            if (!double.IsNaN(longAnchor) && MajorityApproachFromAbove(longAnchor))
+                return "Above→Support(Long bias)";
+            if (!double.IsNaN(shortAnchor) && MajorityApproachFromBelow(shortAnchor))
+                return "Below→Resistance(Short bias)";
+            return "Neutral";
+        }
+
+
         #region Parameters
 
         [NinjaScriptProperty]
@@ -2796,6 +2641,32 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(1, 5)]
         [Display(Name = "Reclaim Lookback Bars", GroupName = "Entry", Order = 24)]
         public int ReclaimLookbackBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(2, 20)]
+        [Display(Name = "Approach Lookback Bars", GroupName = "Entry", Order = 24)]
+        public int ApproachLookbackBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 20)]
+        [Display(Name = "Signal Cooldown Bars", GroupName = "Entry", Order = 24)]
+        public int SignalCooldownBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 8)]
+        [Display(Name = "Touch Tolerance Ticks", GroupName = "Entry", Order = 24)]
+        public int TouchToleranceTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 10.0)]
+        [Display(Name = "Max Stop Points", GroupName = "Risk", Order = 24)]
+        public double MaxStopPoints { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.5, 5.0)]
+        [Display(Name = "Opposite Anchor Proximity ATR", GroupName = "Entry", Order = 24)]
+        public double AnchorProximityAtrMultiple { get; set; }
+
 
         [NinjaScriptProperty]
         [Range(1.0, 4.0)]
