@@ -27,6 +27,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             RallyOrigin,
             SelloffOrigin,
             WeeklyOpen,
+            SessionVWAP,
             ManualLongAVWAP2,
             ManualShortAVWAP2
         }
@@ -169,6 +170,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double wtdVSum;             // running sum of volume since anchor bar
         private bool wtdSeededThisBar;
         private int wtdDeferredWeekYear = -1;
+        private int sessionStartBarIndex = -1;
 
         protected override void OnStateChange()
         {
@@ -234,6 +236,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnableAnchorLogging = true;
                 ShowAnchorStatusOnChart = true;
                 EnableWtdAnchor = true;
+                EnableSessionVwapAnchor = true;
                 EnableImpulseOriginAnchors = true;
                 UseManualAvwap2Anchors = false;
                 EnableManualAnchorHotkeys = true;
@@ -530,6 +533,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             dayLow = Low[0];
             dayHighBarIndex = CurrentBar;
             dayLowBarIndex = CurrentBar;
+            sessionStartBarIndex = CurrentBar;
 
             structuralOverrideUsed = false;
             structuralOverrideActive = false;
@@ -1062,6 +1066,26 @@ namespace NinjaTrader.NinjaScript.Strategies
             return Time[barsAgo];
         }
 
+        private int TimeToBarIndex(DateTime anchorTime)
+        {
+            if (anchorTime <= Core.Globals.MinDate)
+                return -1;
+
+            int idx = Bars.GetBar(anchorTime);
+            return (idx >= 0 && idx <= CurrentBar) ? idx : -1;
+        }
+
+        private double GetSessionVwapValue()
+        {
+            double v = VWAP1(BarsArray[0],
+                new VWAPDesign.StdDesign { Enabled = false, Num = 1 },
+                new VWAPDesign.StdDesign { Enabled = false, Num = 2 },
+                new VWAPDesign.StdDesign { Enabled = false, Num = 3 },
+                true, true, true).Output[0];
+
+            return double.IsNaN(v) ? double.NaN : Instrument.MasterInstrument.RoundToTickSize(v);
+        }
+
         private void RebuildManualAvwapAnchors()
         {
             // Hide previously attached manual indicators when re-anchoring.
@@ -1229,7 +1253,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (TryGetManualAnchorValue(true, out double manualLong))
             {
                 kind = AnchorKind.ManualLongAVWAP2;
-                anchorBarIndex = -1;
+                anchorBarIndex = TimeToBarIndex(ManualLongAnchorFrom);
                 return manualLong;
             }
 
@@ -1240,7 +1264,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return GetAvwapFromBar(structuralOverrideBarIndex, structuralOverridePrice);
             }
 
-            // TEMP PRIORITY ORDER (requested): LOD -> RallyOrigin -> WTD
+            // TEMP PRIORITY ORDER (requested): LOD -> SessionVWAP -> RallyOrigin -> WTD
 
             // 1) LOD first preference
             if (!lodInvalidated)
@@ -1250,7 +1274,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return GetAvwapFromBar(dayLowBarIndex, dayLow);
             }
 
-            // 2) Impulse-origin long fallback
+            // 2) Session VWAP second fixed anchor
+            if (EnableSessionVwapAnchor)
+            {
+                double sessionVwap = GetSessionVwapValue();
+                if (!double.IsNaN(sessionVwap) && Close[0] > sessionVwap && !IsAnchorDegraded(sessionVwap))
+                {
+                    kind = AnchorKind.SessionVWAP;
+                    anchorBarIndex = sessionStartBarIndex;
+                    return sessionVwap;
+                }
+            }
+
+            // 3) Impulse-origin long fallback
             if (EnableImpulseOriginAnchors && rallyOriginBarIndex >= 0)
             {
                 double rallyAvwap = GetAvwapFromBar(rallyOriginBarIndex, rallyOriginPrice);
@@ -1265,7 +1301,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
-            // 3) WTD final fallback
+            // 4) WTD final fallback
             if (EnableWtdAnchor && wtdAnchorSet && wtdAnchorBarIndex >= 0)
             {
                 double wtd = GetWtdAvwap();
@@ -1287,7 +1323,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (TryGetManualAnchorValue(false, out double manualShort))
             {
                 kind = AnchorKind.ManualShortAVWAP2;
-                anchorBarIndex = -1;
+                anchorBarIndex = TimeToBarIndex(ManualShortAnchorFrom);
                 return manualShort;
             }
 
@@ -1313,6 +1349,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             double hodAvwap = hodInvalidated ? double.NaN : GetAvwapFromBar(dayHighBarIndex, dayHigh);
             bool hodCandidateValid = !hodInvalidated && !double.IsNaN(hodAvwap);
 
+            double sessionVwap = double.NaN;
+            bool sessionVwapCandidateValid = false;
+            if (EnableSessionVwapAnchor)
+            {
+                sessionVwap = GetSessionVwapValue();
+                sessionVwapCandidateValid = !double.IsNaN(sessionVwap) && Close[0] < sessionVwap && !IsAnchorDegraded(sessionVwap);
+            }
+
             double wtdAvwap = double.NaN;
             bool wtdCandidateValid = false;
             if (EnableWtdAnchor && wtdAnchorSet && wtdAnchorBarIndex >= 0)
@@ -1324,7 +1368,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     !IsAnchorDegraded(wtdAvwap);
             }
 
-            // TEMP PRIORITY ORDER (requested): HOD -> SelloffOrigin -> WTD
+            // TEMP PRIORITY ORDER (requested): HOD -> SessionVWAP -> SelloffOrigin -> WTD
             // If a higher-priority anchor is invalid/unusable, fall through to the next.
             kind = AnchorKind.HOD;
             anchorBarIndex = -1;
@@ -1335,6 +1379,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 kind = AnchorKind.HOD;
                 anchorBarIndex = dayHighBarIndex;
                 selectedAnchor = hodAvwap;
+            }
+            else if (sessionVwapCandidateValid)
+            {
+                kind = AnchorKind.SessionVWAP;
+                anchorBarIndex = sessionStartBarIndex;
+                selectedAnchor = sessionVwap;
             }
             else if (selloffCandidateValid)
             {
@@ -1353,13 +1403,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 string selloffText = double.IsNaN(selloffAvwap) ? "NA" : selloffAvwap.ToString("F2");
                 string hodText = double.IsNaN(hodAvwap) ? "NA" : hodAvwap.ToString("F2");
+                string sessionText = double.IsNaN(sessionVwap) ? "NA" : sessionVwap.ToString("F2");
                 string wtdText = double.IsNaN(wtdAvwap) ? "NA" : wtdAvwap.ToString("F2");
                 string selectedText = double.IsNaN(selectedAnchor) ? "NA" : selectedAnchor.ToString("F2");
                 string selectedKindText = double.IsNaN(selectedAnchor) ? "None" : kind.ToString();
 
                 string decisionKey =
                     Time[0].Ticks + "|" +
-                    selloffCandidateValid + "|" + hodCandidateValid + "|" + wtdCandidateValid + "|" +
+                    selloffCandidateValid + "|" + hodCandidateValid + "|" + sessionVwapCandidateValid + "|" + wtdCandidateValid + "|" +
                     selectedKindText + "|" + selectedText;
 
                 if (!string.Equals(lastShortAnchorDecisionKey, decisionKey, StringComparison.Ordinal))
@@ -1367,6 +1418,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     PrintWithContext("SHORT_ANCHOR_CANDIDATES" +
                           " selloff=" + selloffText + " valid=" + selloffCandidateValid +
                           " hod=" + hodText + " valid=" + hodCandidateValid + " invalidated=" + hodInvalidated +
+                          " sessionVWAP=" + sessionText + " valid=" + sessionVwapCandidateValid +
                           " wtd=" + wtdText + " valid=" + wtdCandidateValid +
                           " selectedKind=" + selectedKindText +
                           " selected=" + selectedText);
@@ -2827,15 +2879,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Enable WTD Anchor (Sun 17:00 CT)", GroupName = "Anchors", Order = 36)]
         public bool EnableWtdAnchor { get; set; }
 
-        [Display(Name = "Enable Impulse Origin Anchors", GroupName = "Anchors", Order = 37)]
+        [Display(Name = "Enable Session VWAP Anchor", GroupName = "Anchors", Order = 37)]
+        public bool EnableSessionVwapAnchor { get; set; }
+
+        [Display(Name = "Enable Impulse Origin Anchors", GroupName = "Anchors", Order = 38)]
         public bool EnableImpulseOriginAnchors { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Use Manual AVWAP2 Anchors", GroupName = "Anchors", Order = 38)]
+        [Display(Name = "Use Manual AVWAP2 Anchors", GroupName = "Anchors", Order = 39)]
         public bool UseManualAvwap2Anchors { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 39)]
+        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 40)]
         public bool EnableManualAnchorHotkeys { get; set; }
 
         [Browsable(false)]
