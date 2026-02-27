@@ -199,7 +199,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TrendSlopeBars = 5;
                 ApproachLookbackBars = 5;
                 SignalCooldownBars = 5;
-                TouchToleranceTicks = 2;
+                TouchToleranceTicks = 8;
                 MaxStopPoints = 5.0;
                 AnchorProximityAtrMultiple = 1.0;
                 UseExtendedHours = false;
