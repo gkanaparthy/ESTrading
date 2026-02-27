@@ -2414,11 +2414,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (EnableAnchorLogging && !string.Equals(lastAnchorStateKey, stateKey, StringComparison.Ordinal))
             {
                 PrintWithContext("ANCHOR_STATE timeCME=" + FormatCmeTime(nowCme) +
-                      " long=" + longText +
-                      " short=" + shortText +
+                      " firstAnchor=" + longText +
+                      " secondAnchor=" + shortText +
                       " currentRelevant=" + currentRelevantAnchorText +
-                      " nextLong=" + nextLongText +
-                      " nextShort=" + nextShortText +
+                      " nextFirst=" + nextLongText +
+                      " nextSecond=" + nextShortText +
                       " override=" + (structuralOverrideActive
                           ? structuralOverrideKind + " bar=" + structuralOverrideBarIndex
                           : "None") +
@@ -2445,10 +2445,25 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
+            bool firstAnchorValid = longAnchorUsable && !double.IsNaN(longAnchor);
+            bool secondAnchorValid = shortAnchorUsable && !double.IsNaN(shortAnchor);
+            string firstAnchorTime = GetAnchorTimeLabel(longKind, longAnchorBar);
+            string secondAnchorTime = GetAnchorTimeLabel(shortKind, shortAnchorBar);
+
+            string relevantAnchorTime = "NA";
+            if (firstAnchorValid && !secondAnchorValid)
+                relevantAnchorTime = firstAnchorTime;
+            else if (secondAnchorValid && !firstAnchorValid)
+                relevantAnchorTime = secondAnchorTime;
+            else if (firstAnchorValid && secondAnchorValid)
+                relevantAnchorTime = Math.Abs(Close[0] - longAnchor) <= Math.Abs(Close[0] - shortAnchor)
+                    ? firstAnchorTime
+                    : secondAnchorTime;
+
             string chartText =
-                "Long Anchor: " + longText + "\n" +
-                "Short Anchor: " + shortText + "\n" +
-                "Relevant Anchor: " + currentRelevantAnchorText;
+                "First Anchor Time: " + firstAnchorTime + "\n" +
+                "Second Anchor Time: " + secondAnchorTime + "\n" +
+                "Relevant Anchor Time: " + relevantAnchorTime;
 
             Draw.TextFixed(this, AnchorStatusDrawTag, chartText, TextPosition.BottomLeft);
             DrawAnchorOriginMarkers(longKind, longAnchor, longAnchorBar, shortKind, shortAnchor, shortAnchorBar);
@@ -2612,6 +2627,24 @@ namespace NinjaTrader.NinjaScript.Strategies
             return "Waiting new " + side + " structure";
         }
 
+        private string GetAnchorTimeLabel(AnchorKind kind, int anchorBar)
+        {
+            if (kind == AnchorKind.ManualLongAVWAP2)
+                return ManualLongAnchorFrom > Core.Globals.MinDate
+                    ? GetCmeTime(ManualLongAnchorFrom).ToString("HH:mm")
+                    : "NA";
+
+            if (kind == AnchorKind.ManualShortAVWAP2)
+                return ManualShortAnchorFrom > Core.Globals.MinDate
+                    ? GetCmeTime(ManualShortAnchorFrom).ToString("HH:mm")
+                    : "NA";
+
+            if (anchorBar >= 0 && anchorBar <= CurrentBar)
+                return GetCmeTime(BarIndexToTime(anchorBar)).ToString("HH:mm");
+
+            return "NA";
+        }
+
         private string FormatCurrentRelevantAnchor(
             AnchorKind longKind,
             double longAnchor,
@@ -2629,18 +2662,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return "NA";
 
             if (longValid && !shortValid)
-                return "LONG " + longKind + " from " + GetAnchorOriginCmeText(longAnchorBar) + " @" + longAnchor.ToString("F2");
+                return "FIRST " + longKind + " from " + GetAnchorOriginCmeText(longAnchorBar) + " @" + longAnchor.ToString("F2");
 
             if (shortValid && !longValid)
-                return "SHORT " + shortKind + " from " + GetAnchorOriginCmeText(shortAnchorBar) + " @" + shortAnchor.ToString("F2");
+                return "SECOND " + shortKind + " from " + GetAnchorOriginCmeText(shortAnchorBar) + " @" + shortAnchor.ToString("F2");
 
             double longDistance = Math.Abs(Close[0] - longAnchor);
             double shortDistance = Math.Abs(Close[0] - shortAnchor);
             bool chooseLong = longDistance <= shortDistance;
 
             return chooseLong
-                ? "LONG " + longKind + " from " + GetAnchorOriginCmeText(longAnchorBar) + " @" + longAnchor.ToString("F2")
-                : "SHORT " + shortKind + " from " + GetAnchorOriginCmeText(shortAnchorBar) + " @" + shortAnchor.ToString("F2");
+                ? "FIRST " + longKind + " from " + GetAnchorOriginCmeText(longAnchorBar) + " @" + longAnchor.ToString("F2")
+                : "SECOND " + shortKind + " from " + GetAnchorOriginCmeText(shortAnchorBar) + " @" + shortAnchor.ToString("F2");
         }
 
         #region Parameters
