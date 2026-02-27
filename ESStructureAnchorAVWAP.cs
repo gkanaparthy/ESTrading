@@ -133,6 +133,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int signalCooldownRemaining;
         private readonly Dictionary<string, int> anchorTradesToday = new Dictionary<string, int>();
         private readonly Dictionary<string, int> anchorReactionCountsToday = new Dictionary<string, int>();
+        private readonly HashSet<string> anchorReactionEventsSeen = new HashSet<string>();
 
         private struct AnchorCandidate
         {
@@ -589,6 +590,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             signalCooldownRemaining = 0;
             anchorTradesToday.Clear();
             anchorReactionCountsToday.Clear();
+            anchorReactionEventsSeen.Clear();
             longTouchSeen = false;
             shortTouchSeen = false;
             longCloseBackSeen = false;
@@ -2596,20 +2598,30 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (longTouch)
             {
                 if (!longTouchSeen)
+                {
                     longFirstTouchBar = CurrentBar;
+                    IncrementAnchorReactionEvent(longKind, longAnchorBar, "touch");
+                }
                 longTouchSeen = true;
             }
             if (shortTouch)
             {
                 if (!shortTouchSeen)
+                {
                     shortFirstTouchBar = CurrentBar;
+                    IncrementAnchorReactionEvent(shortKind, shortAnchorBar, "touch");
+                }
                 shortTouchSeen = true;
             }
 
             if (longTouchSeen && longAnchorUsable && !double.IsNaN(longAnchor))
             {
                 if (Close[0] > longAnchor)
+                {
+                    if (!longCloseBackSeen)
+                        IncrementAnchorReactionEvent(longKind, longAnchorBar, "reject");
                     longCloseBackSeen = true;
+                }
                 if (Close[0] > Open[0])
                     longBullishSeen = true;
             }
@@ -2617,7 +2629,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (shortTouchSeen && shortAnchorUsable && !double.IsNaN(shortAnchor))
             {
                 if (Close[0] < shortAnchor)
+                {
+                    if (!shortCloseBackSeen)
+                        IncrementAnchorReactionEvent(shortKind, shortAnchorBar, "reject");
                     shortCloseBackSeen = true;
+                }
                 if (Close[0] < Open[0])
                     shortBearishSeen = true;
             }
@@ -2681,7 +2697,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 pendingBreakoutLongTrigger = High[0];
                 pendingBreakoutLongAnchorBar = longAnchorBar;
                 pendingBreakoutLongAnchorPrice = longAnchor;
-                IncrementAnchorReactionCount(longKind, longAnchorBar);
                 longTouchSeen = false;
                 longCloseBackSeen = false;
                 longBullishSeen = false;
@@ -2695,7 +2710,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 pendingBreakoutShortTrigger = Low[0];
                 pendingBreakoutShortAnchorBar = shortAnchorBar;
                 pendingBreakoutShortAnchorPrice = shortAnchor;
-                IncrementAnchorReactionCount(shortKind, shortAnchorBar);
                 shortTouchSeen = false;
                 shortCloseBackSeen = false;
                 shortBearishSeen = false;
@@ -2721,6 +2735,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             string key = BuildAnchorReactionKey(kind, anchorBar);
             anchorReactionCountsToday[key] = anchorReactionCountsToday.TryGetValue(key, out int count) ? count + 1 : 1;
+        }
+
+        private void IncrementAnchorReactionEvent(AnchorKind kind, int anchorBar, string eventType)
+        {
+            if (anchorBar < 0)
+                return;
+
+            string seenKey = BuildAnchorReactionKey(kind, anchorBar) + ":" + eventType + ":" + CurrentBar;
+            if (!anchorReactionEventsSeen.Add(seenKey))
+                return;
+
+            IncrementAnchorReactionCount(kind, anchorBar);
         }
 
         private double ComputeAnchorRankScore(double anchorPrice, AnchorKind kind, int anchorBar)
