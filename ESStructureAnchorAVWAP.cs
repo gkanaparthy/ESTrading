@@ -131,6 +131,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         private string lastMissedShortReasonKey = string.Empty;
 
         private int signalCooldownRemaining;
+        private int gateBlockedOutsideWindow;
+        private int gateBlockedRiskOrLimits;
+        private int gateBlockedAtrNaN;
+        private int gateBlockedAtrLow;
+        private int gateBlockedAtrHigh;
+        private int gateEvalCalls;
         private readonly Dictionary<string, int> anchorTradesToday = new Dictionary<string, int>();
         private readonly Dictionary<string, int> anchorReactionCountsToday = new Dictionary<string, int>();
         private readonly HashSet<string> anchorReactionEventsSeen = new HashSet<string>();
@@ -215,7 +221,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SignalCooldownBars = 5;
                 TouchToleranceTicks = 8;
                 MaxStopPoints = 5.0;
-                AnchorProximityAtrMultiple = 1.0;
+                AnchorProximityAtrMultiple = 0.25;
                 UseExtendedHours = false;
 
                 MaxOpportunitiesPerDay = 3;
@@ -238,7 +244,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 GapThresholdPoints = 8.0;
 
                 ExtremeAtrThreshold = 10.0;
-                MinAtrForEntry = 1.5;
+                MinAtrForEntry = 1.0;
                 DefendedLowImpulseAtr = 1.5;
                 DefendedLowMaxBars = 10;
                 RollingExpectancyTrades = 10;
@@ -405,11 +411,49 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (signalCooldownRemaining > 0)
                 signalCooldownRemaining--;
 
-            if (!inTradeWindow || !CanSubmitNewTrade())
+            if (!inTradeWindow)
+            {
+                gateBlockedOutsideWindow++;
                 return;
+            }
 
-            if (double.IsNaN(atr[0]) || atr[0] < MinAtrForEntry || atr[0] > ExtremeAtrThreshold)
+            if (!CanSubmitNewTrade())
+            {
+                gateBlockedRiskOrLimits++;
                 return;
+            }
+
+            if (double.IsNaN(atr[0]))
+            {
+                gateBlockedAtrNaN++;
+                return;
+            }
+
+            if (atr[0] < MinAtrForEntry)
+            {
+                gateBlockedAtrLow++;
+                return;
+            }
+
+            if (atr[0] > ExtremeAtrThreshold)
+            {
+                gateBlockedAtrHigh++;
+                return;
+            }
+
+            gateEvalCalls++;
+            if (EnableAnchorLogging && (CurrentBar % 50 == 0))
+            {
+                PrintWithContext("DIAG_GATES evalCalls=" + gateEvalCalls +
+                      " blockedOutsideWindow=" + gateBlockedOutsideWindow +
+                      " blockedRiskOrLimits=" + gateBlockedRiskOrLimits +
+                      " blockedAtrNaN=" + gateBlockedAtrNaN +
+                      " blockedAtrLow=" + gateBlockedAtrLow +
+                      " blockedAtrHigh=" + gateBlockedAtrHigh +
+                      " atrNow=" + atr[0].ToString("F2") +
+                      " minAtr=" + MinAtrForEntry.ToString("F2") +
+                      " maxAtr=" + ExtremeAtrThreshold.ToString("F2"));
+            }
 
             EvaluateAnchorRetestBreakout(nowCme, longKind, longAnchor, longAnchorBar, longAnchorUsable, shortKind, shortAnchor, shortAnchorBar, shortAnchorUsable);
             return;
@@ -590,6 +634,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             lastShortAnchorDecisionKey = string.Empty;
             lastMissedShortReasonKey = string.Empty;
             signalCooldownRemaining = 0;
+            gateBlockedOutsideWindow = 0;
+            gateBlockedRiskOrLimits = 0;
+            gateBlockedAtrNaN = 0;
+            gateBlockedAtrLow = 0;
+            gateBlockedAtrHigh = 0;
+            gateEvalCalls = 0;
             anchorTradesToday.Clear();
             anchorReactionCountsToday.Clear();
             anchorReactionEventsSeen.Clear();
@@ -2828,8 +2878,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (anchorTradesToday.TryGetValue(key, out int count) && count >= 2)
                 return false;
 
-            if (!double.IsNaN(oppositeAnchor) && Math.Abs(ownAnchor - oppositeAnchor) <= AnchorProximityAtrMultiple * atr[0])
+            double proximityLimit = Math.Max(4 * TickSize, AnchorProximityAtrMultiple * atr[0]);
+            if (!double.IsNaN(oppositeAnchor) && Math.Abs(ownAnchor - oppositeAnchor) <= proximityLimit)
+            {
+                if (EnableAnchorLogging)
+                {
+                    PrintWithContext("ENTRY_BLOCKED reason=OppositeAnchorTooClose own=" + ownAnchor.ToString("F2") +
+                          " opp=" + oppositeAnchor.ToString("F2") +
+                          " distTicks=" + (Math.Abs(ownAnchor - oppositeAnchor) / TickSize).ToString("F1") +
+                          " limitTicks=" + (proximityLimit / TickSize).ToString("F1"));
+                }
                 return false;
+            }
 
             return true;
         }
