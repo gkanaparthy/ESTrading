@@ -2762,12 +2762,31 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (shortConfirm)
             {
-                pendingBreakoutShort = true;
-                pendingBreakoutShortSetBar = CurrentBar;
-                pendingBreakoutShortTrigger = Low[0];
-                pendingBreakoutShortAnchorBar = shortAnchorBar;
-                pendingBreakoutShortTouchBar = shortFirstTouchBar >= 0 ? shortFirstTouchBar : CurrentBar;
-                pendingBreakoutShortAnchorPrice = shortAnchor;
+                bool sessionVwapImmediateShort = shortKind == AnchorKind.SessionVWAP;
+                if (sessionVwapImmediateShort)
+                {
+                    int touchBar = shortFirstTouchBar >= 0 ? shortFirstTouchBar : CurrentBar;
+                    bool canEnterImmediate = CanEnterForAnchor(shortAnchorBar, false, shortAnchor, longAnchor);
+                    if (EnableAnchorLogging)
+                    {
+                        PrintWithContext("SESSION_VWAP_IMMEDIATE_SHORT confirmBar=" + CurrentBar +
+                              " canEnter=" + canEnterImmediate +
+                              " anchor=" + shortAnchor.ToString("F2"));
+                    }
+
+                    if (canEnterImmediate)
+                        SubmitDirectionalEntry(false, shortAnchor, shortAnchorBar, touchBar);
+                }
+                else
+                {
+                    pendingBreakoutShort = true;
+                    pendingBreakoutShortSetBar = CurrentBar;
+                    pendingBreakoutShortTrigger = Low[0];
+                    pendingBreakoutShortAnchorBar = shortAnchorBar;
+                    pendingBreakoutShortTouchBar = shortFirstTouchBar >= 0 ? shortFirstTouchBar : CurrentBar;
+                    pendingBreakoutShortAnchorPrice = shortAnchor;
+                }
+
                 shortTouchSeen = false;
                 shortCloseBackSeen = false;
                 shortBearishSeen = false;
