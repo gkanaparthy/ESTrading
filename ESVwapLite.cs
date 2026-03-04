@@ -81,7 +81,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int dayHighBarIndex = -1;
         private int dayLowBarIndex = -1;
         private int dailyTrades;
-        private int cooldownRemaining;
+        private Dictionary<AnchorKind, int> anchorCooldowns = new Dictionary<AnchorKind, int>();
 
         // setup state
         private bool supportSetupActive;
@@ -90,6 +90,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double setupResistanceAnchor;
         private int setupSupportBar;
         private int setupResistanceBar;
+        private AnchorKind setupSupportAnchorKind;
+        private AnchorKind setupResistanceAnchorKind;
 
         protected override void OnStateChange()
         {
@@ -124,7 +126,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 StopSwingLookbackBars = 8;
                 MinStopTicks = 8;
                 MaxStopPoints = 5.0;
-                RiskRewardMultiple = 2.0;
+                RiskRewardMultiple = 3.0;
                 MaxRiskPerTradeDollars = 400.0;
 
                 // touch/zone behavior
@@ -173,7 +175,28 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (Position.MarketPosition != MarketPosition.Flat)
                 return;
 
-            // permissive/sim mode: intentionally bypass most gating (time window, ATR, cooldown, daily max)
+            DecrementAnchorCooldowns();
+
+            // --- Confirmation check: only fire for setups armed on a PRIOR bar ---
+            if (supportSetupActive && setupSupportBar < CurrentBar
+                && Close[0] > Open[0] && Close[0] >= setupSupportAnchor)
+            {
+                TrySubmitEntry(true, setupSupportAnchor, setupSupportAnchorKind);
+                supportSetupActive = false;
+                resistanceSetupActive = false;
+                return;
+            }
+
+            if (resistanceSetupActive && setupResistanceBar < CurrentBar
+                && Close[0] < Open[0] && Close[0] <= setupResistanceAnchor)
+            {
+                TrySubmitEntry(false, setupResistanceAnchor, setupResistanceAnchorKind);
+                supportSetupActive = false;
+                resistanceSetupActive = false;
+                return;
+            }
+
+            // --- Build anchors and check for new touch/arm ---
             List<AnchorPoint> anchors = BuildAnchors();
             if (anchors.Count == 0)
                 return;
@@ -196,42 +219,32 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (TrySelectConservativeAnchor(anchors, true, out AnchorPoint supportAnchor))
             {
-                supportSetupActive = true;
-                setupSupportAnchor = supportAnchor.Price;
-                setupSupportBar = CurrentBar;
-                if (EnableLogs)
-                    PrintWithContext("SETUP_ARMED side=LONG kind=" + supportAnchor.Kind + " anchor=" + supportAnchor.Price.ToString("F2"));
+                if (!anchorCooldowns.ContainsKey(supportAnchor.Kind) || anchorCooldowns[supportAnchor.Kind] <= 0)
+                {
+                    supportSetupActive = true;
+                    setupSupportAnchor = supportAnchor.Price;
+                    setupSupportBar = CurrentBar;
+                    setupSupportAnchorKind = supportAnchor.Kind;
+                    if (EnableLogs)
+                        PrintWithContext("SETUP_ARMED side=LONG kind=" + supportAnchor.Kind + " anchor=" + supportAnchor.Price.ToString("F2"));
+                }
             }
 
             if (TrySelectConservativeAnchor(anchors, false, out AnchorPoint resistanceAnchor))
             {
-                resistanceSetupActive = true;
-                setupResistanceAnchor = resistanceAnchor.Price;
-                setupResistanceBar = CurrentBar;
-                if (EnableLogs)
-                    PrintWithContext("SETUP_ARMED side=SHORT kind=" + resistanceAnchor.Kind + " anchor=" + resistanceAnchor.Price.ToString("F2"));
-            }
-
-            // if price touched anchor and this bar closed green above support zone -> long
-            if (supportSetupActive && Close[0] > Open[0] && Close[0] >= setupSupportAnchor - touchTol)
-            {
-                TrySubmitEntry(true, setupSupportAnchor);
-                supportSetupActive = false;
-                resistanceSetupActive = false;
-                return;
-            }
-
-            // if price touched anchor and this bar closed red below resistance zone -> short
-            if (resistanceSetupActive && Close[0] < Open[0] && Close[0] <= setupResistanceAnchor + touchTol)
-            {
-                TrySubmitEntry(false, setupResistanceAnchor);
-                supportSetupActive = false;
-                resistanceSetupActive = false;
-                return;
+                if (!anchorCooldowns.ContainsKey(resistanceAnchor.Kind) || anchorCooldowns[resistanceAnchor.Kind] <= 0)
+                {
+                    resistanceSetupActive = true;
+                    setupResistanceAnchor = resistanceAnchor.Price;
+                    setupResistanceBar = CurrentBar;
+                    setupResistanceAnchorKind = resistanceAnchor.Kind;
+                    if (EnableLogs)
+                        PrintWithContext("SETUP_ARMED side=SHORT kind=" + resistanceAnchor.Kind + " anchor=" + resistanceAnchor.Price.ToString("F2"));
+                }
             }
         }
 
-        private void TrySubmitEntry(bool isLong, double anchorUsed)
+        private void TrySubmitEntry(bool isLong, double anchorUsed, AnchorKind anchorKind)
         {
             int stopTicks = ComputeSwingStopTicks(isLong);
             int quantity = DefaultQuantity;
@@ -258,11 +271,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnterShort(quantity, signal);
 
             dailyTrades++;
-            cooldownRemaining = Math.Max(cooldownRemaining, SignalCooldownBars);
+            anchorCooldowns[anchorKind] = SignalCooldownBars;
 
             if (EnableLogs)
             {
                 PrintWithContext("ENTRY side=" + (isLong ? "LONG" : "SHORT") +
+                                 " kind=" + anchorKind +
                                  " anchor=" + anchorUsed.ToString("F2") +
                                  " close=" + Close[0].ToString("F2") +
                                  " stopTicks=" + stopTicks +
@@ -564,9 +578,20 @@ namespace NinjaTrader.NinjaScript.Strategies
             dayHighBarIndex = CurrentBar;
             dayLowBarIndex = CurrentBar;
             dailyTrades = 0;
-            cooldownRemaining = 0;
+            anchorCooldowns.Clear();
             supportSetupActive = false;
             resistanceSetupActive = false;
+        }
+
+        private void DecrementAnchorCooldowns()
+        {
+            var keys = new List<AnchorKind>(anchorCooldowns.Keys);
+            foreach (AnchorKind k in keys)
+            {
+                anchorCooldowns[k]--;
+                if (anchorCooldowns[k] <= 0)
+                    anchorCooldowns.Remove(k);
+            }
         }
 
         private void UpdateDailyExtremes()
