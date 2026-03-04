@@ -33,6 +33,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             public AnchorKind Kind;
             public double Price;
             public int BarIndex;
+            public DateTime AnchorTime;
         }
 
         private const int CmeRthStart = 83000;
@@ -51,6 +52,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private TimeZoneInfo barTimeZone;
         private AVWAP2 manualLongAvwap2;
         private AVWAP2 manualShortAvwap2;
+        private AVWAP2 relevantSupportAvwap2;
+        private AVWAP2 relevantResistanceAvwap2;
+        private int relevantSupportAnchorBarIndex = -1;
+        private int relevantResistanceAnchorBarIndex = -1;
 
         // manual anchor hotkeys/click capture
         private bool manualHotkeysHooked;
@@ -68,6 +73,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double wtdAnchorOpenPrice;
         private bool wtdAnchorSet;
         private int wtdAnchorWeekYear = -1;
+        private DateTime wtdAnchorTime = DateTime.MinValue;
         private double wtdPV;
         private double wtdVSum;
         private bool wtdSeededThisBar;
@@ -328,35 +334,35 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 double s = GetSessionVwapValue();
                 if (!double.IsNaN(s))
-                    list.Add(new AnchorPoint { Kind = AnchorKind.SessionVWAP, Price = s, BarIndex = sessionStartBarIndex });
+                    list.Add(new AnchorPoint { Kind = AnchorKind.SessionVWAP, Price = s, BarIndex = sessionStartBarIndex, AnchorTime = SafeBarTime(sessionStartBarIndex) });
             }
 
             if (EnableWeeklyVwapAnchor)
             {
                 double w = GetWtdAvwap();
                 if (!double.IsNaN(w))
-                    list.Add(new AnchorPoint { Kind = AnchorKind.WeeklyVWAP, Price = w, BarIndex = wtdAnchorBarIndex });
+                    list.Add(new AnchorPoint { Kind = AnchorKind.WeeklyVWAP, Price = w, BarIndex = wtdAnchorBarIndex, AnchorTime = wtdAnchorTime });
             }
 
             if (dayHighBarIndex >= 0)
             {
                 double h = GetAvwapFromBar(dayHighBarIndex, dayHigh);
                 if (!double.IsNaN(h))
-                    list.Add(new AnchorPoint { Kind = AnchorKind.HOD, Price = h, BarIndex = dayHighBarIndex });
+                    list.Add(new AnchorPoint { Kind = AnchorKind.HOD, Price = h, BarIndex = dayHighBarIndex, AnchorTime = SafeBarTime(dayHighBarIndex) });
             }
 
             if (dayLowBarIndex >= 0)
             {
                 double l = GetAvwapFromBar(dayLowBarIndex, dayLow);
                 if (!double.IsNaN(l))
-                    list.Add(new AnchorPoint { Kind = AnchorKind.LOD, Price = l, BarIndex = dayLowBarIndex });
+                    list.Add(new AnchorPoint { Kind = AnchorKind.LOD, Price = l, BarIndex = dayLowBarIndex, AnchorTime = SafeBarTime(dayLowBarIndex) });
             }
 
             if (TryGetManualAnchorValue(true, out double mLong))
-                list.Add(new AnchorPoint { Kind = AnchorKind.ManualLong, Price = mLong, BarIndex = TimeToBarIndex(ManualLongAnchorFrom) });
+                list.Add(new AnchorPoint { Kind = AnchorKind.ManualLong, Price = mLong, BarIndex = TimeToBarIndex(ManualLongAnchorFrom), AnchorTime = ManualLongAnchorFrom });
 
             if (TryGetManualAnchorValue(false, out double mShort))
-                list.Add(new AnchorPoint { Kind = AnchorKind.ManualShort, Price = mShort, BarIndex = TimeToBarIndex(ManualShortAnchorFrom) });
+                list.Add(new AnchorPoint { Kind = AnchorKind.ManualShort, Price = mShort, BarIndex = TimeToBarIndex(ManualShortAnchorFrom), AnchorTime = ManualShortAnchorFrom });
 
             return list;
         }
@@ -425,50 +431,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void UpdateVwapOverlays()
         {
+            // Flat horizontal VWAP lines removed; anchor AVWAP2 curves are shown via UpdateRelevantAnchorOverlays instead.
             if (ChartControl == null)
                 return;
-
-            if (ShowSessionVwapOnChart)
-            {
-                double session = GetSessionVwapValue();
-                if (!double.IsNaN(session))
-                {
-                    int startBarsAgo = Math.Min(CurrentBar, 200);
-                    Draw.HorizontalLine(this, SessionVwapLineTag, session, Brushes.DeepSkyBlue);
-                    Draw.Text(this, SessionVwapLabelTag, "Session VWAP", 0, session + (2 * TickSize), Brushes.DeepSkyBlue);
-                }
-                else
-                {
-                    RemoveDrawObject(SessionVwapLineTag);
-                    RemoveDrawObject(SessionVwapLabelTag);
-                }
-            }
-            else
-            {
-                RemoveDrawObject(SessionVwapLineTag);
-                RemoveDrawObject(SessionVwapLabelTag);
-            }
-
-            if (ShowWeeklyVwapOnChart)
-            {
-                double weekly = GetWtdAvwap();
-                if (!double.IsNaN(weekly))
-                {
-                    int startBarsAgo = Math.Min(CurrentBar, 200);
-                    Draw.HorizontalLine(this, WeeklyVwapLineTag, weekly, Brushes.Gold);
-                    Draw.Text(this, WeeklyVwapLabelTag, "Weekly VWAP", 0, weekly - (2 * TickSize), Brushes.Gold);
-                }
-                else
-                {
-                    RemoveDrawObject(WeeklyVwapLineTag);
-                    RemoveDrawObject(WeeklyVwapLabelTag);
-                }
-            }
-            else
-            {
-                RemoveDrawObject(WeeklyVwapLineTag);
-                RemoveDrawObject(WeeklyVwapLabelTag);
-            }
+            RemoveDrawObject(SessionVwapLineTag);
+            RemoveDrawObject(SessionVwapLabelTag);
+            RemoveDrawObject(WeeklyVwapLineTag);
+            RemoveDrawObject(WeeklyVwapLabelTag);
         }
 
         private bool TrySelectConservativeAnchorNearPrice(List<AnchorPoint> anchors, bool forSupport, out AnchorPoint selected)
@@ -527,36 +496,71 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (!ShowRelevantAnchorsOnChart)
             {
-                RemoveDrawObject(RelevantSupportLineTag);
                 RemoveDrawObject(RelevantSupportLabelTag);
-                RemoveDrawObject(RelevantResistanceLineTag);
                 RemoveDrawObject(RelevantResistanceLabelTag);
+                HideRelevantAvwap(ref relevantSupportAvwap2);
+                HideRelevantAvwap(ref relevantResistanceAvwap2);
+                relevantSupportAnchorBarIndex = -1;
+                relevantResistanceAnchorBarIndex = -1;
                 return;
             }
 
-            int startBarsAgo = Math.Min(CurrentBar, 200);
-
             if (TrySelectConservativeAnchorNearPrice(anchors, true, out AnchorPoint support))
             {
-                Draw.HorizontalLine(this, RelevantSupportLineTag, support.Price, Brushes.LimeGreen);
-                Draw.Text(this, RelevantSupportLabelTag, "Relevant Support: " + support.Kind, 0, support.Price + (4 * TickSize), Brushes.LimeGreen);
+                Draw.Text(this, RelevantSupportLabelTag, "Support: " + support.Kind, 0, support.Price + (4 * TickSize), Brushes.LimeGreen);
+                if (support.BarIndex != relevantSupportAnchorBarIndex && support.BarIndex >= 0 && support.AnchorTime > Core.Globals.MinDate)
+                {
+                    RebuildRelevantAvwap(ref relevantSupportAvwap2, support.AnchorTime, Brushes.LimeGreen);
+                    relevantSupportAnchorBarIndex = support.BarIndex;
+                }
             }
             else
             {
-                RemoveDrawObject(RelevantSupportLineTag);
                 RemoveDrawObject(RelevantSupportLabelTag);
+                HideRelevantAvwap(ref relevantSupportAvwap2);
+                relevantSupportAnchorBarIndex = -1;
             }
 
             if (TrySelectConservativeAnchorNearPrice(anchors, false, out AnchorPoint resistance))
             {
-                Draw.HorizontalLine(this, RelevantResistanceLineTag, resistance.Price, Brushes.OrangeRed);
-                Draw.Text(this, RelevantResistanceLabelTag, "Relevant Resistance: " + resistance.Kind, 0, resistance.Price - (4 * TickSize), Brushes.OrangeRed);
+                Draw.Text(this, RelevantResistanceLabelTag, "Resistance: " + resistance.Kind, 0, resistance.Price - (4 * TickSize), Brushes.OrangeRed);
+                if (resistance.BarIndex != relevantResistanceAnchorBarIndex && resistance.BarIndex >= 0 && resistance.AnchorTime > Core.Globals.MinDate)
+                {
+                    RebuildRelevantAvwap(ref relevantResistanceAvwap2, resistance.AnchorTime, Brushes.OrangeRed);
+                    relevantResistanceAnchorBarIndex = resistance.BarIndex;
+                }
             }
             else
             {
-                RemoveDrawObject(RelevantResistanceLineTag);
                 RemoveDrawObject(RelevantResistanceLabelTag);
+                HideRelevantAvwap(ref relevantResistanceAvwap2);
+                relevantResistanceAnchorBarIndex = -1;
             }
+        }
+
+        private void RebuildRelevantAvwap(ref AVWAP2 avwap, DateTime anchorTime, System.Windows.Media.Brush color)
+        {
+            HideRelevantAvwap(ref avwap);
+            avwap = AVWAP2(BarsArray[0], anchorTime,
+                new VWAPDesign.StdDesign { Enabled = false, Num = 2 },
+                new VWAPDesign.StdDesign { Enabled = false, Num = 3 }, true, true, true);
+            if (avwap != null && avwap.Plots != null && avwap.Plots.Length > 0)
+                avwap.Plots[0].Brush = color;
+        }
+
+        private void HideRelevantAvwap(ref AVWAP2 avwap)
+        {
+            if (avwap != null && avwap.Plots != null && avwap.Plots.Length > 0)
+                avwap.Plots[0].Brush = Brushes.Transparent;
+            avwap = null;
+        }
+
+        private DateTime SafeBarTime(int absBarIndex)
+        {
+            int barsAgo = CurrentBar - absBarIndex;
+            if (barsAgo < 0 || barsAgo > 254)
+                return DateTime.MinValue;
+            return Time[barsAgo];
         }
 
         private bool IsInTradeWindow(int cmeTime)
@@ -581,6 +585,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             anchorCooldowns.Clear();
             supportSetupActive = false;
             resistanceSetupActive = false;
+            relevantSupportAnchorBarIndex = -1;
+            relevantResistanceAnchorBarIndex = -1;
         }
 
         private void DecrementAnchorCooldowns()
@@ -675,6 +681,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             wtdAnchorBarIndex = CurrentBar;
             wtdAnchorOpenPrice = Open[0];
+            wtdAnchorTime = Time[0];
             wtdAnchorSet = true;
             wtdAnchorWeekYear = weekKey;
             wtdSeededThisBar = true;
@@ -701,6 +708,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 wtdAnchorBarIndex = anchorAbsBar;
                 wtdAnchorOpenPrice = Open[i];
+                wtdAnchorTime = Time[i];
                 wtdAnchorSet = true;
                 wtdAnchorWeekYear = foundWeekKey;
                 wtdSeededThisBar = true;
