@@ -52,6 +52,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         private AVWAP2 relevantAnchorAvwap2;
         private int relevantAnchorBarIndex = -1;
 
+        // stored DateTimes for anchors that may be > 254 bars ago
+        private DateTime sessionStartTime = Core.Globals.MinDate;
+        private DateTime dayHighTime = Core.Globals.MinDate;
+        private DateTime dayLowTime = Core.Globals.MinDate;
+
         // manual anchor hotkeys/click capture
         private bool manualHotkeysHooked;
         private Chart chartWindow;
@@ -170,18 +175,19 @@ namespace NinjaTrader.NinjaScript.Strategies
             UpdateDailyExtremes();
             UpdateVwapOverlays();
 
+            // Build anchors and update chart overlay — always, regardless of position
+            List<AnchorPoint> anchors = BuildAnchors();
+            UpdateRelevantAnchorOverlays(anchors);
+
             if (Position.MarketPosition != MarketPosition.Flat)
+                return;
+
+            if (anchors.Count == 0)
                 return;
 
             DecrementAnchorCooldowns();
 
-            // Build anchors and find current closest — used by both confirmation and gate/touch
-            List<AnchorPoint> anchors = BuildAnchors();
-            if (anchors.Count == 0)
-                return;
-
-            UpdateRelevantAnchorOverlays(anchors);
-
+            // Find closest anchor
             AnchorPoint closest = anchors[0];
             double bestDist = Math.Abs(Close[0] - closest.Price);
             for (int i = 1; i < anchors.Count; i++)
@@ -193,6 +199,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             double tol    = TouchToleranceTicks * TickSize;
             double atrVal = atr[0];
             int    lb     = Math.Min(RecentBarLookback, CurrentBar);
+            double avwap  = closest.Price;
 
             // --- Stage 1: Confirmation — re-validate live before firing ---
             if (setupActive && setupBar < CurrentBar)
@@ -217,7 +224,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (!gateStillValid)
                     {
                         if (EnableLogs)
-                            PrintWithContext("SETUP_CANCELLED gate_invalid kind=" + setupAnchorKind + " side=" + (setupIsLong ? "LONG" : "SHORT"));
+                            PrintWithContext("SETUP_CANCELLED gate_invalid kind=" + setupAnchorKind + " side=" + (setupIsLong ? "L" : "S"));
                         setupActive = false;
                     }
                     else if (setupIsLong && Close[0] > Open[0] && Close[0] >= liveAvwap)
@@ -235,24 +242,33 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
-            if (anchorCooldowns.ContainsKey(closest.Kind) && anchorCooldowns[closest.Kind] > 0)
+            // Compute gate/touch flags
+            bool inCooldown  = anchorCooldowns.ContainsKey(closest.Kind) && anchorCooldowns[closest.Kind] > 0;
+            bool anchorNew   = CurrentBar <= closest.BarIndex;
+            bool longGate    = !inCooldown && !anchorNew
+                            && (Close[0] - atrVal) > avwap
+                            && Low[LowestBar(Low, lb)] >= avwap - tol;
+            bool shortGate   = !inCooldown && !anchorNew
+                            && (Close[0] + atrVal) < avwap
+                            && High[HighestBar(High, lb)] <= avwap + tol;
+            bool touch       = Low[0] <= avwap + tol && High[0] >= avwap - tol;
+
+            // Per-bar diagnostic log
+            if (EnableLogs)
+            {
+                int cd = anchorCooldowns.ContainsKey(closest.Kind) ? anchorCooldowns[closest.Kind] : 0;
+                PrintWithContext(string.Format(
+                    "BAR anchor={0} avwap={1} atr={2:F2} L={3} S={4} touch={5} setup={6} cd={7} trades={8}",
+                    closest.Kind, avwap.ToString("F2"), atrVal,
+                    longGate ? 1 : 0, shortGate ? 1 : 0, touch ? 1 : 0,
+                    setupActive ? (setupIsLong ? "L" : "S") : "-",
+                    cd, dailyTrades));
+            }
+
+            if (inCooldown || anchorNew)
                 return;
-
-            if (CurrentBar <= closest.BarIndex)
-                return;
-
-            double avwap = closest.Price;
-
-            // --- Stage 2: Directional gate ---
-            bool longGate  = (Close[0] - atrVal) > avwap
-                          && Low[LowestBar(Low, lb)]  >= avwap - tol;
-
-            bool shortGate = (Close[0] + atrVal) < avwap
-                          && High[HighestBar(High, lb)] <= avwap + tol;
 
             // --- Stage 3: Touch → arm setup if gate is passing ---
-            bool touch = Low[0] <= avwap + tol && High[0] >= avwap - tol;
-
             if (touch && !setupActive)
             {
                 if (longGate)
@@ -362,7 +378,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 double s = GetSessionVwapValue();
                 if (!double.IsNaN(s))
-                    list.Add(new AnchorPoint { Kind = AnchorKind.SessionVWAP, Price = s, BarIndex = sessionStartBarIndex, AnchorTime = SafeBarTime(sessionStartBarIndex) });
+                    list.Add(new AnchorPoint { Kind = AnchorKind.SessionVWAP, Price = s, BarIndex = sessionStartBarIndex, AnchorTime = sessionStartTime });
             }
 
             if (EnableWeeklyVwapAnchor)
@@ -376,14 +392,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 double h = GetAvwapFromBar(dayHighBarIndex, dayHigh);
                 if (!double.IsNaN(h))
-                    list.Add(new AnchorPoint { Kind = AnchorKind.HOD, Price = h, BarIndex = dayHighBarIndex, AnchorTime = SafeBarTime(dayHighBarIndex) });
+                    list.Add(new AnchorPoint { Kind = AnchorKind.HOD, Price = h, BarIndex = dayHighBarIndex, AnchorTime = dayHighTime });
             }
 
             if (dayLowBarIndex >= 0)
             {
                 double l = GetAvwapFromBar(dayLowBarIndex, dayLow);
                 if (!double.IsNaN(l))
-                    list.Add(new AnchorPoint { Kind = AnchorKind.LOD, Price = l, BarIndex = dayLowBarIndex, AnchorTime = SafeBarTime(dayLowBarIndex) });
+                    list.Add(new AnchorPoint { Kind = AnchorKind.LOD, Price = l, BarIndex = dayLowBarIndex, AnchorTime = dayLowTime });
             }
 
             if (TryGetManualAnchorValue(true, out double mLong))
@@ -410,13 +426,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void UpdateRelevantAnchorOverlays(List<AnchorPoint> anchors)
         {
-            if (ChartControl == null)
+            if (ChartControl == null || !ShowRelevantAnchorsOnChart)
                 return;
 
-            if (!ShowRelevantAnchorsOnChart || anchors == null || anchors.Count == 0)
+            if (anchors == null || anchors.Count == 0)
             {
                 RemoveDrawObject(RelevantAnchorLabelTag);
-                HideRelevantAvwap(ref relevantAnchorAvwap2);
                 relevantAnchorBarIndex = -1;
                 return;
             }
@@ -434,25 +449,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (closest.BarIndex != relevantAnchorBarIndex && closest.BarIndex >= 0 && closest.AnchorTime > Core.Globals.MinDate)
             {
-                RebuildRelevantAvwap(ref relevantAnchorAvwap2, closest.AnchorTime, Brushes.DodgerBlue);
+                RebuildRelevantAvwap(ref relevantAnchorAvwap2, closest.AnchorTime);
                 relevantAnchorBarIndex = closest.BarIndex;
             }
         }
 
-        private void RebuildRelevantAvwap(ref AVWAP2 avwap, DateTime anchorTime, System.Windows.Media.Brush color)
+        private void RebuildRelevantAvwap(ref AVWAP2 avwap, DateTime anchorTime)
         {
-            HideRelevantAvwap(ref avwap);
             avwap = AVWAP2(BarsArray[0], anchorTime,
                 new VWAPDesign.StdDesign { Enabled = false, Num = 2 },
                 new VWAPDesign.StdDesign { Enabled = false, Num = 3 }, true, true, true);
-            if (avwap != null && avwap.Plots != null && avwap.Plots.Length > 0)
-                avwap.Plots[0].Brush = color;
         }
 
         private void HideRelevantAvwap(ref AVWAP2 avwap)
         {
-            if (avwap != null && avwap.Plots != null && avwap.Plots.Length > 0)
-                avwap.Plots[0].Brush = Brushes.Transparent;
             avwap = null;
         }
 
@@ -478,10 +488,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             sessionDate = GetCmeTime(Time[0]).Date;
             sessionStartBarIndex = CurrentBar;
+            sessionStartTime = Time[0];
             dayHigh = High[0];
             dayLow = Low[0];
             dayHighBarIndex = CurrentBar;
+            dayHighTime = Time[0];
             dayLowBarIndex = CurrentBar;
+            dayLowTime = Time[0];
             dailyTrades = 0;
             anchorCooldowns.Clear();
             setupActive = false;
@@ -505,12 +518,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 dayHigh = High[0];
                 dayHighBarIndex = CurrentBar;
+                dayHighTime = Time[0];
             }
 
             if (Low[0] <= dayLow - TickSize)
             {
                 dayLow = Low[0];
                 dayLowBarIndex = CurrentBar;
+                dayLowTime = Time[0];
             }
         }
 
