@@ -9,7 +9,9 @@ using System.Windows.Media;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.DrawingTools;
 using NinjaTrader.NinjaScript.Indicators;
 
 namespace NinjaTrader.NinjaScript.Strategies
@@ -35,6 +37,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private const int CmeRthStart = 83000;
         private const int CmeRthEnd = 150000;
+        private const string SessionVwapLineTag = "ESVwapLite.SessionVWAP.Line";
+        private const string SessionVwapLabelTag = "ESVwapLite.SessionVWAP.Label";
+        private const string WeeklyVwapLineTag = "ESVwapLite.WeeklyVWAP.Line";
+        private const string WeeklyVwapLabelTag = "ESVwapLite.WeeklyVWAP.Label";
 
         private ATR atr;
         private TimeZoneInfo cmeTimeZone;
@@ -123,6 +129,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 EnableSessionVwapAnchor = true;
                 EnableWeeklyVwapAnchor = true;
+                ShowSessionVwapOnChart = true;
+                ShowWeeklyVwapOnChart = true;
                 UseManualAnchors = true;
                 EnableManualAnchorHotkeys = true;
                 EnableLogs = true;
@@ -155,6 +163,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             UpdateWtdAnchorIfNeeded();
             UpdateWtdRunningAccumulator();
             UpdateDailyExtremes();
+            UpdateVwapOverlays();
 
             if (Position.MarketPosition != MarketPosition.Flat)
                 return;
@@ -417,6 +426,54 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             return true;
+        }
+
+        private void UpdateVwapOverlays()
+        {
+            if (ChartControl == null)
+                return;
+
+            if (ShowSessionVwapOnChart)
+            {
+                double session = GetSessionVwapValue();
+                if (!double.IsNaN(session))
+                {
+                    int startBarsAgo = Math.Min(CurrentBar, 200);
+                    Draw.Line(this, SessionVwapLineTag, false, startBarsAgo, session, 0, session, Brushes.DeepSkyBlue, DashStyleHelper.Solid, 2);
+                    Draw.Text(this, SessionVwapLabelTag, "Session VWAP", 0, session + (2 * TickSize), Brushes.DeepSkyBlue);
+                }
+                else
+                {
+                    RemoveDrawObject(SessionVwapLineTag);
+                    RemoveDrawObject(SessionVwapLabelTag);
+                }
+            }
+            else
+            {
+                RemoveDrawObject(SessionVwapLineTag);
+                RemoveDrawObject(SessionVwapLabelTag);
+            }
+
+            if (ShowWeeklyVwapOnChart)
+            {
+                double weekly = GetWtdAvwap();
+                if (!double.IsNaN(weekly))
+                {
+                    int startBarsAgo = Math.Min(CurrentBar, 200);
+                    Draw.Line(this, WeeklyVwapLineTag, false, startBarsAgo, weekly, 0, weekly, Brushes.Gold, DashStyleHelper.Dash, 3);
+                    Draw.Text(this, WeeklyVwapLabelTag, "Weekly VWAP", 0, weekly - (2 * TickSize), Brushes.Gold);
+                }
+                else
+                {
+                    RemoveDrawObject(WeeklyVwapLineTag);
+                    RemoveDrawObject(WeeklyVwapLabelTag);
+                }
+            }
+            else
+            {
+                RemoveDrawObject(WeeklyVwapLineTag);
+                RemoveDrawObject(WeeklyVwapLabelTag);
+            }
         }
 
         private bool IsInTradeWindow(int cmeTime)
@@ -926,7 +983,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool UseManualAnchors { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 17)]
+        [Display(Name = "Show Session VWAP On Chart", GroupName = "Anchors", Order = 17)]
+        public bool ShowSessionVwapOnChart { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Weekly VWAP On Chart", GroupName = "Anchors", Order = 18)]
+        public bool ShowWeeklyVwapOnChart { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 19)]
         public bool EnableManualAnchorHotkeys { get; set; }
 
         [Browsable(false)]
@@ -936,7 +1001,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public DateTime ManualShortAnchorFrom { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 18)]
+        [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 20)]
         public bool EnableLogs { get; set; }
 
         #endregion
