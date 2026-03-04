@@ -182,19 +182,65 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (anchors.Count == 0)
                 return;
 
-            // Find closest anchor
-            AnchorPoint closest = anchors[0];
-            double bestDist = Math.Abs(Close[0] - closest.Price);
-            for (int i = 1; i < anchors.Count; i++)
+            double tol = TouchToleranceTicks * TickSize;
+            double atrVal = atr[0];
+
+            // Build touched cluster and select one stable conservative anchor
+            var touched = new List<AnchorPoint>();
+            for (int i = 0; i < anchors.Count; i++)
             {
-                double d = Math.Abs(Close[0] - anchors[i].Price);
-                if (d < bestDist) { bestDist = d; closest = anchors[i]; }
+                if (Low[0] <= anchors[i].Price + tol && High[0] >= anchors[i].Price - tol)
+                    touched.Add(anchors[i]);
             }
 
-            double tol    = TouchToleranceTicks * TickSize;
-            double atrVal = atr[0];
-            int    lb     = Math.Min(RecentBarLookback, CurrentBar);
-            double avwap  = closest.Price;
+            AnchorPoint selected = anchors[0];
+            bool touch = touched.Count > 0;
+            bool inferredLong = false;
+            if (touch)
+            {
+                AnchorPoint seed = touched[0];
+                double bestDist = Math.Abs(Close[0] - seed.Price);
+                for (int i = 1; i < touched.Count; i++)
+                {
+                    double d = Math.Abs(Close[0] - touched[i].Price);
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        seed = touched[i];
+                    }
+                }
+
+                double clusterBand = Math.Max(TickSize, atrVal); // 1 ATR zone as requested
+                var cluster = new List<AnchorPoint>();
+                for (int i = 0; i < anchors.Count; i++)
+                {
+                    if (Math.Abs(anchors[i].Price - seed.Price) <= clusterBand)
+                        cluster.Add(anchors[i]);
+                }
+
+                bool fromAbove = Close[1] > seed.Price;
+                bool fromBelow = Close[1] < seed.Price;
+                inferredLong = fromAbove || (!fromBelow && Close[0] >= seed.Price);
+
+                selected = cluster[0];
+                for (int i = 1; i < cluster.Count; i++)
+                {
+                    if (inferredLong)
+                    {
+                        // conservative support
+                        if (cluster[i].Price < selected.Price)
+                            selected = cluster[i];
+                    }
+                    else
+                    {
+                        // conservative resistance
+                        if (cluster[i].Price > selected.Price)
+                            selected = cluster[i];
+                    }
+                }
+            }
+
+            double avwap = selected.Price;
 
             // confirmation stage: once setup is armed, wait for first directional candle (no anchor-switch cancellation)
             if (setupActive && setupBar < CurrentBar)
@@ -230,46 +276,35 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             // Compute state flags
-            bool inCooldown  = anchorCooldowns.ContainsKey(closest.Kind) && anchorCooldowns[closest.Kind] > 0;
-            bool anchorNew   = CurrentBar <= closest.BarIndex;
+            bool inCooldown  = anchorCooldowns.ContainsKey(selected.Kind) && anchorCooldowns[selected.Kind] > 0;
             bool tradeCapHit = dailyTrades >= MaxTradesPerDay;
             bool atrOk       = atrVal >= MinAtrForEntry && atrVal <= MaxAtrForEntry;
-            bool touch       = Low[0] <= avwap + tol && High[0] >= avwap - tol;
 
             if (EnableLogs)
             {
-                int cd = anchorCooldowns.ContainsKey(closest.Kind) ? anchorCooldowns[closest.Kind] : 0;
+                int cd = anchorCooldowns.ContainsKey(selected.Kind) ? anchorCooldowns[selected.Kind] : 0;
                 PrintWithContext(string.Format(
                     "BAR anchor={0} avwap={1} atr={2:F2} touch={3} setup={4} cd={5} trades={6} atrOk={7}",
-                    closest.Kind, avwap.ToString("F2"), atrVal,
+                    selected.Kind, avwap.ToString("F2"), atrVal,
                     touch ? 1 : 0,
                     setupActive ? (setupIsLong ? "L" : "S") : "-",
                     cd, dailyTrades, atrOk ? 1 : 0));
             }
 
-            if (inCooldown || anchorNew || tradeCapHit || !atrOk)
+            if (inCooldown || tradeCapHit || !atrOk)
                 return;
 
             // touch arms one latched setup and keeps it fixed until confirm/timeout
             if (touch && !setupActive)
             {
-                bool armLong = Close[1] <= avwap;
-                bool armShort = Close[1] >= avwap;
-
-                if (armLong && !armShort)
-                    setupIsLong = true;
-                else if (armShort && !armLong)
-                    setupIsLong = false;
-                else
-                    setupIsLong = Close[0] >= avwap;
-
+                setupIsLong = inferredLong;
                 setupActive = true;
                 setupAnchorPrice = avwap;
                 setupBar = CurrentBar;
-                setupAnchorKind = closest.Kind;
+                setupAnchorKind = selected.Kind;
 
                 if (EnableLogs)
-                    PrintWithContext("SETUP_ARMED side=" + (setupIsLong ? "LONG" : "SHORT") + " kind=" + closest.Kind + " avwap=" + avwap.ToString("F2"));
+                    PrintWithContext("SETUP_ARMED side=" + (setupIsLong ? "LONG" : "SHORT") + " kind=" + selected.Kind + " avwap=" + avwap.ToString("F2"));
             }
         }
 
