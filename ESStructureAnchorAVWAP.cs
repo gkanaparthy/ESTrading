@@ -2731,8 +2731,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool longRetestSatisfied = true;
             bool shortRetestSatisfied = true;
 
-            bool longConfirm = longCloseBackSeen && longBullishSeen && longRetestSatisfied && MajorityApproachFromAbove(longAnchor);
-            bool shortConfirm = shortCloseBackSeen && shortBearishSeen && shortRetestSatisfied && MajorityApproachFromBelow(shortAnchor);
+            bool longConfirm = longCloseBackSeen && longBullishSeen && longRetestSatisfied;
+            bool shortConfirm = shortCloseBackSeen && shortBearishSeen && shortRetestSatisfied;
 
             // Only one confirmation per bar. If both fire, prefer the one with
             // the closer anchor (more likely to be the actionable setup).
