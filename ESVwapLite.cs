@@ -223,9 +223,52 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!touchedAny)
                 return;
 
-            if (TrySelectConservativeAnchor(anchors, true, out AnchorPoint supportAnchor))
+            bool supportFound   = TrySelectConservativeAnchor(anchors, true,  out AnchorPoint supportAnchor);
+            bool resistanceFound = TrySelectConservativeAnchor(anchors, false, out AnchorPoint resistanceAnchor);
+
+            bool congested = supportFound && resistanceFound
+                && Math.Abs(supportAnchor.Price - resistanceAnchor.Price) <= ClusterAtrMultiple * atr[0];
+
+            if (congested)
             {
-                if (!anchorCooldowns.ContainsKey(supportAnchor.Kind) || anchorCooldowns[supportAnchor.Kind] <= 0)
+                // Both anchors within 1 ATR — determine approach direction and trade one side only.
+                double clusterMid = (supportAnchor.Price + resistanceAnchor.Price) / 2.0;
+                bool fromBelow = Close[1] < clusterMid;
+
+                if (fromBelow)
+                {
+                    // Short only — use lowest anchor in cluster (most conservative for entry from below)
+                    double entryPrice = Math.Min(supportAnchor.Price, resistanceAnchor.Price);
+                    AnchorKind entryKind = supportAnchor.Price <= resistanceAnchor.Price ? supportAnchor.Kind : resistanceAnchor.Kind;
+                    if (!anchorCooldowns.ContainsKey(entryKind) || anchorCooldowns[entryKind] <= 0)
+                    {
+                        resistanceSetupActive = true;
+                        setupResistanceAnchor = entryKind == supportAnchor.Kind ? supportAnchor.Price : resistanceAnchor.Price;
+                        setupResistanceBar = CurrentBar;
+                        setupResistanceAnchorKind = entryKind;
+                        if (EnableLogs)
+                            PrintWithContext("SETUP_ARMED side=SHORT[congested] kind=" + entryKind + " anchor=" + setupResistanceAnchor.ToString("F2"));
+                    }
+                }
+                else
+                {
+                    // Long only — use highest anchor in cluster (most conservative for entry from above)
+                    AnchorKind entryKind = resistanceAnchor.Price >= supportAnchor.Price ? resistanceAnchor.Kind : supportAnchor.Kind;
+                    if (!anchorCooldowns.ContainsKey(entryKind) || anchorCooldowns[entryKind] <= 0)
+                    {
+                        supportSetupActive = true;
+                        setupSupportAnchor = entryKind == resistanceAnchor.Kind ? resistanceAnchor.Price : supportAnchor.Price;
+                        setupSupportBar = CurrentBar;
+                        setupSupportAnchorKind = entryKind;
+                        if (EnableLogs)
+                            PrintWithContext("SETUP_ARMED side=LONG[congested] kind=" + entryKind + " anchor=" + setupSupportAnchor.ToString("F2"));
+                    }
+                }
+            }
+            else
+            {
+                // Non-congested — arm each side independently as before
+                if (supportFound && (!anchorCooldowns.ContainsKey(supportAnchor.Kind) || anchorCooldowns[supportAnchor.Kind] <= 0))
                 {
                     supportSetupActive = true;
                     setupSupportAnchor = supportAnchor.Price;
@@ -234,11 +277,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (EnableLogs)
                         PrintWithContext("SETUP_ARMED side=LONG kind=" + supportAnchor.Kind + " anchor=" + supportAnchor.Price.ToString("F2"));
                 }
-            }
 
-            if (TrySelectConservativeAnchor(anchors, false, out AnchorPoint resistanceAnchor))
-            {
-                if (!anchorCooldowns.ContainsKey(resistanceAnchor.Kind) || anchorCooldowns[resistanceAnchor.Kind] <= 0)
+                if (resistanceFound && (!anchorCooldowns.ContainsKey(resistanceAnchor.Kind) || anchorCooldowns[resistanceAnchor.Kind] <= 0))
                 {
                     resistanceSetupActive = true;
                     setupResistanceAnchor = resistanceAnchor.Price;
