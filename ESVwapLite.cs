@@ -175,30 +175,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             DecrementAnchorCooldowns();
 
-            // --- Stage 1: Confirmation — only for setups armed on a prior bar ---
-            if (setupActive && setupBar < CurrentBar)
-            {
-                if (setupIsLong && Close[0] > Open[0] && Close[0] >= setupAnchorPrice)
-                {
-                    TrySubmitEntry(true, setupAnchorPrice, setupAnchorKind);
-                    setupActive = false;
-                    return;
-                }
-                if (!setupIsLong && Close[0] < Open[0] && Close[0] <= setupAnchorPrice)
-                {
-                    TrySubmitEntry(false, setupAnchorPrice, setupAnchorKind);
-                    setupActive = false;
-                    return;
-                }
-            }
-
+            // Build anchors and find current closest — used by both confirmation and gate/touch
             List<AnchorPoint> anchors = BuildAnchors();
             if (anchors.Count == 0)
                 return;
 
             UpdateRelevantAnchorOverlays(anchors);
 
-            // Find the single closest anchor to current price
             AnchorPoint closest = anchors[0];
             double bestDist = Math.Abs(Close[0] - closest.Price);
             for (int i = 1; i < anchors.Count; i++)
@@ -207,27 +190,67 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (d < bestDist) { bestDist = d; closest = anchors[i]; }
             }
 
+            double tol    = TouchToleranceTicks * TickSize;
+            double atrVal = atr[0];
+            int    lb     = Math.Min(RecentBarLookback, CurrentBar);
+
+            // --- Stage 1: Confirmation — re-validate live before firing ---
+            if (setupActive && setupBar < CurrentBar)
+            {
+                // Edge case 1: closest anchor kind changed since setup was armed → cancel
+                if (closest.Kind != setupAnchorKind)
+                {
+                    if (EnableLogs)
+                        PrintWithContext("SETUP_CANCELLED anchor_switched old=" + setupAnchorKind + " new=" + closest.Kind);
+                    setupActive = false;
+                }
+                else
+                {
+                    // Edge case 3: use current live AVWAP price, not the stale snapped price
+                    double liveAvwap = closest.Price;
+
+                    // Edge case 2: re-check directional gate with current AVWAP
+                    bool gateStillValid = setupIsLong
+                        ? (Close[0] - atrVal) > liveAvwap && Low[LowestBar(Low, lb)]  >= liveAvwap - tol
+                        : (Close[0] + atrVal) < liveAvwap && High[HighestBar(High, lb)] <= liveAvwap + tol;
+
+                    if (!gateStillValid)
+                    {
+                        if (EnableLogs)
+                            PrintWithContext("SETUP_CANCELLED gate_invalid kind=" + setupAnchorKind + " side=" + (setupIsLong ? "LONG" : "SHORT"));
+                        setupActive = false;
+                    }
+                    else if (setupIsLong && Close[0] > Open[0] && Close[0] >= liveAvwap)
+                    {
+                        TrySubmitEntry(true, liveAvwap, setupAnchorKind);
+                        setupActive = false;
+                        return;
+                    }
+                    else if (!setupIsLong && Close[0] < Open[0] && Close[0] <= liveAvwap)
+                    {
+                        TrySubmitEntry(false, liveAvwap, setupAnchorKind);
+                        setupActive = false;
+                        return;
+                    }
+                }
+            }
+
             if (anchorCooldowns.ContainsKey(closest.Kind) && anchorCooldowns[closest.Kind] > 0)
                 return;
 
             if (CurrentBar <= closest.BarIndex)
                 return;
 
-            double avwap  = closest.Price;
-            double atrVal = atr[0];
-            double tol    = TouchToleranceTicks * TickSize;
-            int    lb     = Math.Min(RecentBarLookback, CurrentBar);
+            double avwap = closest.Price;
 
             // --- Stage 2: Directional gate ---
-            // Long gate: close is 1 ATR above AVWAP AND lowest low in lookback stayed above AVWAP
             bool longGate  = (Close[0] - atrVal) > avwap
                           && Low[LowestBar(Low, lb)]  >= avwap - tol;
 
-            // Short gate: close is 1 ATR below AVWAP AND highest high in lookback stayed below AVWAP
             bool shortGate = (Close[0] + atrVal) < avwap
                           && High[HighestBar(High, lb)] <= avwap + tol;
 
-            // --- Stage 3: Touch detection → arm setup if gate is passing ---
+            // --- Stage 3: Touch → arm setup if gate is passing ---
             bool touch = Low[0] <= avwap + tol && High[0] >= avwap - tol;
 
             if (touch && !setupActive)
