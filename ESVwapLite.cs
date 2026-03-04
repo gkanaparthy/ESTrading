@@ -446,7 +446,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!double.IsNaN(session))
                 {
                     int startBarsAgo = Math.Min(CurrentBar, 200);
-                    Draw.Line(this, SessionVwapLineTag, false, startBarsAgo, session, 0, session, Brushes.DeepSkyBlue, DashStyleHelper.Solid, 2);
+                    Draw.HorizontalLine(this, SessionVwapLineTag, session, Brushes.DeepSkyBlue);
                     Draw.Text(this, SessionVwapLabelTag, "Session VWAP", 0, session + (2 * TickSize), Brushes.DeepSkyBlue);
                 }
                 else
@@ -467,7 +467,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!double.IsNaN(weekly))
                 {
                     int startBarsAgo = Math.Min(CurrentBar, 200);
-                    Draw.Line(this, WeeklyVwapLineTag, false, startBarsAgo, weekly, 0, weekly, Brushes.Gold, DashStyleHelper.Dash, 3);
+                    Draw.HorizontalLine(this, WeeklyVwapLineTag, weekly, Brushes.Gold);
                     Draw.Text(this, WeeklyVwapLabelTag, "Weekly VWAP", 0, weekly - (2 * TickSize), Brushes.Gold);
                 }
                 else
@@ -550,7 +550,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (TrySelectConservativeAnchorNearPrice(anchors, true, out AnchorPoint support))
             {
-                Draw.Line(this, RelevantSupportLineTag, false, startBarsAgo, support.Price, 0, support.Price, Brushes.LimeGreen, DashStyleHelper.Dot, 2);
+                Draw.HorizontalLine(this, RelevantSupportLineTag, support.Price, Brushes.LimeGreen);
                 Draw.Text(this, RelevantSupportLabelTag, "Relevant Support: " + support.Kind, 0, support.Price + (4 * TickSize), Brushes.LimeGreen);
             }
             else
@@ -561,7 +561,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (TrySelectConservativeAnchorNearPrice(anchors, false, out AnchorPoint resistance))
             {
-                Draw.Line(this, RelevantResistanceLineTag, false, startBarsAgo, resistance.Price, 0, resistance.Price, Brushes.OrangeRed, DashStyleHelper.Dot, 2);
+                Draw.HorizontalLine(this, RelevantResistanceLineTag, resistance.Price, Brushes.OrangeRed);
                 Draw.Text(this, RelevantResistanceLabelTag, "Relevant Resistance: " + resistance.Kind, 0, resistance.Price - (4 * TickSize), Brushes.OrangeRed);
             }
             else
