@@ -84,6 +84,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int dailyTrades;
         private Dictionary<AnchorKind, int> anchorCooldowns = new Dictionary<AnchorKind, int>();
 
+        // setup state
+        private bool setupActive;
+        private bool setupIsLong;
+        private double setupAnchorPrice;
+        private int setupBar;
+        private AnchorKind setupAnchorKind;
 
         protected override void OnStateChange()
         {
@@ -169,6 +175,23 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             DecrementAnchorCooldowns();
 
+            // --- Stage 1: Confirmation — only for setups armed on a prior bar ---
+            if (setupActive && setupBar < CurrentBar)
+            {
+                if (setupIsLong && Close[0] > Open[0] && Close[0] >= setupAnchorPrice)
+                {
+                    TrySubmitEntry(true, setupAnchorPrice, setupAnchorKind);
+                    setupActive = false;
+                    return;
+                }
+                if (!setupIsLong && Close[0] < Open[0] && Close[0] <= setupAnchorPrice)
+                {
+                    TrySubmitEntry(false, setupAnchorPrice, setupAnchorKind);
+                    setupActive = false;
+                    return;
+                }
+            }
+
             List<AnchorPoint> anchors = BuildAnchors();
             if (anchors.Count == 0)
                 return;
@@ -195,25 +218,40 @@ namespace NinjaTrader.NinjaScript.Strategies
             double tol    = TouchToleranceTicks * TickSize;
             int    lb     = Math.Min(RecentBarLookback, CurrentBar);
 
-            // Long: close is 1 ATR above AVWAP AND lowest low in lookback touched AVWAP from above
-            bool longSignal = (Close[0] - atrVal) > avwap
-                           && Low[LowestBar(Low, lb)] >= avwap - tol;
+            // --- Stage 2: Directional gate ---
+            // Long gate: close is 1 ATR above AVWAP AND lowest low in lookback stayed above AVWAP
+            bool longGate  = (Close[0] - atrVal) > avwap
+                          && Low[LowestBar(Low, lb)]  >= avwap - tol;
 
-            // Short: close is 1 ATR below AVWAP AND highest high in lookback touched AVWAP from below
-            bool shortSignal = (Close[0] + atrVal) < avwap
-                            && High[HighestBar(High, lb)] <= avwap + tol;
+            // Short gate: close is 1 ATR below AVWAP AND highest high in lookback stayed below AVWAP
+            bool shortGate = (Close[0] + atrVal) < avwap
+                          && High[HighestBar(High, lb)] <= avwap + tol;
 
-            if (longSignal)
+            // --- Stage 3: Touch detection → arm setup if gate is passing ---
+            bool touch = Low[0] <= avwap + tol && High[0] >= avwap - tol;
+
+            if (touch && !setupActive)
             {
-                if (EnableLogs)
-                    PrintWithContext("SIGNAL LONG kind=" + closest.Kind + " avwap=" + avwap.ToString("F2") + " close=" + Close[0].ToString("F2"));
-                TrySubmitEntry(true, avwap, closest.Kind);
-            }
-            else if (shortSignal)
-            {
-                if (EnableLogs)
-                    PrintWithContext("SIGNAL SHORT kind=" + closest.Kind + " avwap=" + avwap.ToString("F2") + " close=" + Close[0].ToString("F2"));
-                TrySubmitEntry(false, avwap, closest.Kind);
+                if (longGate)
+                {
+                    setupActive      = true;
+                    setupIsLong      = true;
+                    setupAnchorPrice = avwap;
+                    setupBar         = CurrentBar;
+                    setupAnchorKind  = closest.Kind;
+                    if (EnableLogs)
+                        PrintWithContext("SETUP_ARMED LONG kind=" + closest.Kind + " avwap=" + avwap.ToString("F2"));
+                }
+                else if (shortGate)
+                {
+                    setupActive      = true;
+                    setupIsLong      = false;
+                    setupAnchorPrice = avwap;
+                    setupBar         = CurrentBar;
+                    setupAnchorKind  = closest.Kind;
+                    if (EnableLogs)
+                        PrintWithContext("SETUP_ARMED SHORT kind=" + closest.Kind + " avwap=" + avwap.ToString("F2"));
+                }
             }
         }
 
@@ -423,6 +461,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             dayLowBarIndex = CurrentBar;
             dailyTrades = 0;
             anchorCooldowns.Clear();
+            setupActive = false;
             relevantAnchorBarIndex = -1;
         }
 
