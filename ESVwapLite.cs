@@ -116,7 +116,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 AtrPeriod = 14;
                 UseExtendedHours = false;
-                MaxTradesPerDay = 6;
+                MaxTradesPerDay = 1000;
                 SignalCooldownBars = 2;
                 MinAtrForEntry = 0.8;
                 MaxAtrForEntry = 14.0;
