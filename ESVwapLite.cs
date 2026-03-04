@@ -949,7 +949,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool UseExtendedHours { get; set; }
 
         [NinjaScriptProperty]
-        [Range(1, 20)]
+        [Range(1, 1000)]
         [Display(Name = "Max Trades Per Day", GroupName = "Risk", Order = 5)]
         public int MaxTradesPerDay { get; set; }
 
