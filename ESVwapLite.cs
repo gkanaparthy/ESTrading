@@ -131,6 +131,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // touch/zone behavior
                 TouchToleranceTicks = 2;
                 RecentBarLookback = 5;
+                SetupMaxBars = 5;
 
                 EnableSessionVwapAnchor = true;
                 EnableWeeklyVwapAnchor = true;
@@ -195,98 +196,80 @@ namespace NinjaTrader.NinjaScript.Strategies
             int    lb     = Math.Min(RecentBarLookback, CurrentBar);
             double avwap  = closest.Price;
 
-            // --- Stage 1: Confirmation — re-validate live before firing ---
+            // confirmation stage: once setup is armed, wait for first directional candle (no anchor-switch cancellation)
             if (setupActive && setupBar < CurrentBar)
             {
-                // Edge case 1: closest anchor kind changed since setup was armed → cancel
-                if (closest.Kind != setupAnchorKind)
+                double liveAvwap = setupAnchorPrice;
+                for (int i = 0; i < anchors.Count; i++)
+                {
+                    if (anchors[i].Kind == setupAnchorKind)
+                    {
+                        liveAvwap = anchors[i].Price;
+                        break;
+                    }
+                }
+
+                if ((CurrentBar - setupBar) > SetupMaxBars)
                 {
                     if (EnableLogs)
-                        PrintWithContext("SETUP_CANCELLED anchor_switched old=" + setupAnchorKind + " new=" + closest.Kind);
+                        PrintWithContext("SETUP_CANCELLED timeout kind=" + setupAnchorKind + " side=" + (setupIsLong ? "L" : "S"));
                     setupActive = false;
                 }
-                else
+                else if (setupIsLong && Close[0] > Open[0])
                 {
-                    // Edge case 3: use current live AVWAP price, not the stale snapped price
-                    double liveAvwap = closest.Price;
-
-                    // Edge case 2: re-check directional gate with current AVWAP
-                    bool gateStillValid = setupIsLong
-                        ? (Close[0] - atrVal) > liveAvwap && Low[LowestBar(Low, lb)]  >= liveAvwap - tol
-                        : (Close[0] + atrVal) < liveAvwap && High[HighestBar(High, lb)] <= liveAvwap + tol;
-
-                    if (!gateStillValid)
-                    {
-                        if (EnableLogs)
-                            PrintWithContext("SETUP_CANCELLED gate_invalid kind=" + setupAnchorKind + " side=" + (setupIsLong ? "L" : "S"));
-                        setupActive = false;
-                    }
-                    else if (setupIsLong && Close[0] > Open[0] && Close[0] >= liveAvwap)
-                    {
-                        TrySubmitEntry(true, liveAvwap, setupAnchorKind);
-                        setupActive = false;
-                        return;
-                    }
-                    else if (!setupIsLong && Close[0] < Open[0] && Close[0] <= liveAvwap)
-                    {
-                        TrySubmitEntry(false, liveAvwap, setupAnchorKind);
-                        setupActive = false;
-                        return;
-                    }
+                    TrySubmitEntry(true, liveAvwap, setupAnchorKind);
+                    setupActive = false;
+                    return;
+                }
+                else if (!setupIsLong && Close[0] < Open[0])
+                {
+                    TrySubmitEntry(false, liveAvwap, setupAnchorKind);
+                    setupActive = false;
+                    return;
                 }
             }
 
-            // Compute gate/touch flags
+            // Compute state flags
             bool inCooldown  = anchorCooldowns.ContainsKey(closest.Kind) && anchorCooldowns[closest.Kind] > 0;
             bool anchorNew   = CurrentBar <= closest.BarIndex;
             bool tradeCapHit = dailyTrades >= MaxTradesPerDay;
             bool atrOk       = atrVal >= MinAtrForEntry && atrVal <= MaxAtrForEntry;
-            bool longGate    = !inCooldown && !anchorNew && !tradeCapHit && atrOk
-                            && (Close[0] - atrVal) > avwap
-                            && Low[LowestBar(Low, lb)] >= avwap - tol;
-            bool shortGate   = !inCooldown && !anchorNew && !tradeCapHit && atrOk
-                            && (Close[0] + atrVal) < avwap
-                            && High[HighestBar(High, lb)] <= avwap + tol;
             bool touch       = Low[0] <= avwap + tol && High[0] >= avwap - tol;
 
-            // Per-bar diagnostic log
             if (EnableLogs)
             {
                 int cd = anchorCooldowns.ContainsKey(closest.Kind) ? anchorCooldowns[closest.Kind] : 0;
                 PrintWithContext(string.Format(
-                    "BAR anchor={0} avwap={1} atr={2:F2} L={3} S={4} touch={5} setup={6} cd={7} trades={8} atrOk={9}",
+                    "BAR anchor={0} avwap={1} atr={2:F2} touch={3} setup={4} cd={5} trades={6} atrOk={7}",
                     closest.Kind, avwap.ToString("F2"), atrVal,
-                    longGate ? 1 : 0, shortGate ? 1 : 0, touch ? 1 : 0,
+                    touch ? 1 : 0,
                     setupActive ? (setupIsLong ? "L" : "S") : "-",
                     cd, dailyTrades, atrOk ? 1 : 0));
             }
 
-            if (inCooldown || anchorNew)
+            if (inCooldown || anchorNew || tradeCapHit || !atrOk)
                 return;
 
-            // --- Stage 3: Touch → arm setup if gate is passing ---
+            // touch arms one latched setup and keeps it fixed until confirm/timeout
             if (touch && !setupActive)
             {
-                if (longGate)
-                {
-                    setupActive      = true;
-                    setupIsLong      = true;
-                    setupAnchorPrice = avwap;
-                    setupBar         = CurrentBar;
-                    setupAnchorKind  = closest.Kind;
-                    if (EnableLogs)
-                        PrintWithContext("SETUP_ARMED LONG kind=" + closest.Kind + " avwap=" + avwap.ToString("F2"));
-                }
-                else if (shortGate)
-                {
-                    setupActive      = true;
-                    setupIsLong      = false;
-                    setupAnchorPrice = avwap;
-                    setupBar         = CurrentBar;
-                    setupAnchorKind  = closest.Kind;
-                    if (EnableLogs)
-                        PrintWithContext("SETUP_ARMED SHORT kind=" + closest.Kind + " avwap=" + avwap.ToString("F2"));
-                }
+                bool armLong = Close[1] <= avwap;
+                bool armShort = Close[1] >= avwap;
+
+                if (armLong && !armShort)
+                    setupIsLong = true;
+                else if (armShort && !armLong)
+                    setupIsLong = false;
+                else
+                    setupIsLong = Close[0] >= avwap;
+
+                setupActive = true;
+                setupAnchorPrice = avwap;
+                setupBar = CurrentBar;
+                setupAnchorKind = closest.Kind;
+
+                if (EnableLogs)
+                    PrintWithContext("SETUP_ARMED side=" + (setupIsLong ? "LONG" : "SHORT") + " kind=" + closest.Kind + " avwap=" + avwap.ToString("F2"));
             }
         }
 
@@ -974,6 +957,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(2, 20)]
         [Display(Name = "Recent Bar Lookback", GroupName = "Anchors", Order = 13)]
         public int RecentBarLookback { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Setup Max Bars", GroupName = "Anchors", Order = 14)]
+        public int SetupMaxBars { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Enable Session VWAP Anchor", GroupName = "Anchors", Order = 15)]
