@@ -173,27 +173,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (Position.MarketPosition != MarketPosition.Flat)
                 return;
 
-            if (cooldownRemaining > 0)
-                cooldownRemaining--;
-
-            if (cooldownRemaining > 0 || dailyTrades >= MaxTradesPerDay)
-                return;
-
-            int nowCme = GetCmeTimeInt(Time[0]);
-            if (!IsInTradeWindow(nowCme))
-                return;
-
-            if (double.IsNaN(atr[0]) || atr[0] < MinAtrForEntry || atr[0] > MaxAtrForEntry)
-                return;
-
+            // permissive/sim mode: intentionally bypass most gating (time window, ATR, cooldown, daily max)
             List<AnchorPoint> anchors = BuildAnchors();
             if (anchors.Count == 0)
                 return;
 
             UpdateRelevantAnchorOverlays(anchors);
 
-            bool touchedAny = false;
             double touchTol = TouchToleranceTicks * TickSize;
+            bool touchedAny = false;
             foreach (AnchorPoint a in anchors)
             {
                 if (Low[0] <= a.Price + touchTol && High[0] >= a.Price - touchTol)
@@ -203,58 +191,43 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
-            // if a new touch happens, arm setup(s) from conservative anchor selection
-            if (touchedAny)
-            {
-                if (TrySelectConservativeAnchor(anchors, true, out AnchorPoint supportAnchor))
-                {
-                    // "coming from above" support context
-                    if (Close[1] >= supportAnchor.Price)
-                    {
-                        supportSetupActive = true;
-                        setupSupportAnchor = supportAnchor.Price;
-                        setupSupportBar = CurrentBar;
-                        if (EnableLogs)
-                            PrintWithContext("SETUP_ARMED side=LONG kind=" + supportAnchor.Kind + " anchor=" + supportAnchor.Price.ToString("F2"));
-                    }
-                }
+            if (!touchedAny)
+                return;
 
-                if (TrySelectConservativeAnchor(anchors, false, out AnchorPoint resistanceAnchor))
-                {
-                    // "coming from below" resistance context
-                    if (Close[1] <= resistanceAnchor.Price)
-                    {
-                        resistanceSetupActive = true;
-                        setupResistanceAnchor = resistanceAnchor.Price;
-                        setupResistanceBar = CurrentBar;
-                        if (EnableLogs)
-                            PrintWithContext("SETUP_ARMED side=SHORT kind=" + resistanceAnchor.Kind + " anchor=" + resistanceAnchor.Price.ToString("F2"));
-                    }
-                }
+            if (TrySelectConservativeAnchor(anchors, true, out AnchorPoint supportAnchor))
+            {
+                supportSetupActive = true;
+                setupSupportAnchor = supportAnchor.Price;
+                setupSupportBar = CurrentBar;
+                if (EnableLogs)
+                    PrintWithContext("SETUP_ARMED side=LONG kind=" + supportAnchor.Kind + " anchor=" + supportAnchor.Price.ToString("F2"));
             }
 
-            // long: at least one green close after touch -> enter next bar open (market on close in OnBarClose)
-            if (supportSetupActive && CurrentBar >= setupSupportBar)
+            if (TrySelectConservativeAnchor(anchors, false, out AnchorPoint resistanceAnchor))
             {
-                if (Close[0] > Open[0] && Close[0] >= setupSupportAnchor - touchTol)
-                {
-                    TrySubmitEntry(true, setupSupportAnchor);
-                    supportSetupActive = false;
-                    resistanceSetupActive = false;
-                    return;
-                }
+                resistanceSetupActive = true;
+                setupResistanceAnchor = resistanceAnchor.Price;
+                setupResistanceBar = CurrentBar;
+                if (EnableLogs)
+                    PrintWithContext("SETUP_ARMED side=SHORT kind=" + resistanceAnchor.Kind + " anchor=" + resistanceAnchor.Price.ToString("F2"));
             }
 
-            // short: at least one red close after touch -> enter next bar open
-            if (resistanceSetupActive && CurrentBar >= setupResistanceBar)
+            // if price touched anchor and this bar closed green above support zone -> long
+            if (supportSetupActive && Close[0] > Open[0] && Close[0] >= setupSupportAnchor - touchTol)
             {
-                if (Close[0] < Open[0] && Close[0] <= setupResistanceAnchor + touchTol)
-                {
-                    TrySubmitEntry(false, setupResistanceAnchor);
-                    supportSetupActive = false;
-                    resistanceSetupActive = false;
-                    return;
-                }
+                TrySubmitEntry(true, setupSupportAnchor);
+                supportSetupActive = false;
+                resistanceSetupActive = false;
+                return;
+            }
+
+            // if price touched anchor and this bar closed red below resistance zone -> short
+            if (resistanceSetupActive && Close[0] < Open[0] && Close[0] <= setupResistanceAnchor + touchTol)
+            {
+                TrySubmitEntry(false, setupResistanceAnchor);
+                supportSetupActive = false;
+                resistanceSetupActive = false;
+                return;
             }
         }
 
@@ -267,9 +240,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (!ApplyRiskCap(ref quantity, stopTicks))
             {
+                // permissive fallback for sim: still place a 1-lot to test signal flow
+                quantity = 1;
                 if (EnableLogs)
-                    PrintWithContext("ENTRY_SKIP reason=RiskCap stopTicks=" + stopTicks + " qty=" + quantity);
-                return;
+                    PrintWithContext("ENTRY_RISKCAP_BYPASS qtyForced=1 stopTicks=" + stopTicks);
             }
 
             int targetTicks = Math.Max(stopTicks + 1, (int)Math.Round(stopTicks * RiskRewardMultiple));
