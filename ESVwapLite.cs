@@ -42,20 +42,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const string SessionVwapLabelTag = "ESVwapLite.SessionVWAP.Label";
         private const string WeeklyVwapLineTag = "ESVwapLite.WeeklyVWAP.Line";
         private const string WeeklyVwapLabelTag = "ESVwapLite.WeeklyVWAP.Label";
-        private const string RelevantSupportLineTag = "ESVwapLite.RelevantSupport.Line";
-        private const string RelevantSupportLabelTag = "ESVwapLite.RelevantSupport.Label";
-        private const string RelevantResistanceLineTag = "ESVwapLite.RelevantResistance.Line";
-        private const string RelevantResistanceLabelTag = "ESVwapLite.RelevantResistance.Label";
+        private const string RelevantAnchorLabelTag = "ESVwapLite.RelevantAnchor.Label";
 
         private ATR atr;
         private TimeZoneInfo cmeTimeZone;
         private TimeZoneInfo barTimeZone;
         private AVWAP2 manualLongAvwap2;
         private AVWAP2 manualShortAvwap2;
-        private AVWAP2 relevantSupportAvwap2;
-        private AVWAP2 relevantResistanceAvwap2;
-        private int relevantSupportAnchorBarIndex = -1;
-        private int relevantResistanceAnchorBarIndex = -1;
+        private AVWAP2 relevantAnchorAvwap2;
+        private int relevantAnchorBarIndex = -1;
 
         // manual anchor hotkeys/click capture
         private bool manualHotkeysHooked;
@@ -89,15 +84,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int dailyTrades;
         private Dictionary<AnchorKind, int> anchorCooldowns = new Dictionary<AnchorKind, int>();
 
-        // setup state
-        private bool supportSetupActive;
-        private bool resistanceSetupActive;
-        private double setupSupportAnchor;
-        private double setupResistanceAnchor;
-        private int setupSupportBar;
-        private int setupResistanceBar;
-        private AnchorKind setupSupportAnchorKind;
-        private AnchorKind setupResistanceAnchorKind;
 
         protected override void OnStateChange()
         {
@@ -137,7 +123,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // touch/zone behavior
                 TouchToleranceTicks = 2;
-                ClusterAtrMultiple = 1.0;
+                RecentBarLookback = 5;
 
                 EnableSessionVwapAnchor = true;
                 EnableWeeklyVwapAnchor = true;
@@ -183,110 +169,51 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             DecrementAnchorCooldowns();
 
-            // --- Confirmation check: only fire for setups armed on a PRIOR bar ---
-            if (supportSetupActive && setupSupportBar < CurrentBar
-                && Close[0] > Open[0] && Close[0] >= setupSupportAnchor)
-            {
-                TrySubmitEntry(true, setupSupportAnchor, setupSupportAnchorKind);
-                supportSetupActive = false;
-                resistanceSetupActive = false;
-                return;
-            }
-
-            if (resistanceSetupActive && setupResistanceBar < CurrentBar
-                && Close[0] < Open[0] && Close[0] <= setupResistanceAnchor)
-            {
-                TrySubmitEntry(false, setupResistanceAnchor, setupResistanceAnchorKind);
-                supportSetupActive = false;
-                resistanceSetupActive = false;
-                return;
-            }
-
-            // --- Build anchors and check for new touch/arm ---
             List<AnchorPoint> anchors = BuildAnchors();
             if (anchors.Count == 0)
                 return;
 
             UpdateRelevantAnchorOverlays(anchors);
 
-            double touchTol = TouchToleranceTicks * TickSize;
-            bool touchedAny = false;
-            foreach (AnchorPoint a in anchors)
+            // Find the single closest anchor to current price
+            AnchorPoint closest = anchors[0];
+            double bestDist = Math.Abs(Close[0] - closest.Price);
+            for (int i = 1; i < anchors.Count; i++)
             {
-                if (Low[0] <= a.Price + touchTol && High[0] >= a.Price - touchTol)
-                {
-                    touchedAny = true;
-                    break;
-                }
+                double d = Math.Abs(Close[0] - anchors[i].Price);
+                if (d < bestDist) { bestDist = d; closest = anchors[i]; }
             }
 
-            if (!touchedAny)
+            if (anchorCooldowns.ContainsKey(closest.Kind) && anchorCooldowns[closest.Kind] > 0)
                 return;
 
-            bool supportFound   = TrySelectConservativeAnchor(anchors, true,  out AnchorPoint supportAnchor);
-            bool resistanceFound = TrySelectConservativeAnchor(anchors, false, out AnchorPoint resistanceAnchor);
+            if (CurrentBar <= closest.BarIndex)
+                return;
 
-            bool congested = supportFound && resistanceFound
-                && Math.Abs(supportAnchor.Price - resistanceAnchor.Price) <= ClusterAtrMultiple * atr[0];
+            double avwap  = closest.Price;
+            double atrVal = atr[0];
+            double tol    = TouchToleranceTicks * TickSize;
+            int    lb     = Math.Min(RecentBarLookback, CurrentBar);
 
-            if (congested)
+            // Long: close is 1 ATR above AVWAP AND lowest low in lookback touched AVWAP from above
+            bool longSignal = (Close[0] - atrVal) > avwap
+                           && Low[LowestBar(Low, lb)] >= avwap - tol;
+
+            // Short: close is 1 ATR below AVWAP AND highest high in lookback touched AVWAP from below
+            bool shortSignal = (Close[0] + atrVal) < avwap
+                            && High[HighestBar(High, lb)] <= avwap + tol;
+
+            if (longSignal)
             {
-                // Both anchors within 1 ATR — determine approach direction and trade one side only.
-                double clusterMid = (supportAnchor.Price + resistanceAnchor.Price) / 2.0;
-                bool fromBelow = Close[1] < clusterMid;
-
-                if (fromBelow)
-                {
-                    // Short only — use lowest anchor in cluster (most conservative for entry from below)
-                    double entryPrice = Math.Min(supportAnchor.Price, resistanceAnchor.Price);
-                    AnchorKind entryKind = supportAnchor.Price <= resistanceAnchor.Price ? supportAnchor.Kind : resistanceAnchor.Kind;
-                    if (!anchorCooldowns.ContainsKey(entryKind) || anchorCooldowns[entryKind] <= 0)
-                    {
-                        resistanceSetupActive = true;
-                        setupResistanceAnchor = entryKind == supportAnchor.Kind ? supportAnchor.Price : resistanceAnchor.Price;
-                        setupResistanceBar = CurrentBar;
-                        setupResistanceAnchorKind = entryKind;
-                        if (EnableLogs)
-                            PrintWithContext("SETUP_ARMED side=SHORT[congested] kind=" + entryKind + " anchor=" + setupResistanceAnchor.ToString("F2"));
-                    }
-                }
-                else
-                {
-                    // Long only — use highest anchor in cluster (most conservative for entry from above)
-                    AnchorKind entryKind = resistanceAnchor.Price >= supportAnchor.Price ? resistanceAnchor.Kind : supportAnchor.Kind;
-                    if (!anchorCooldowns.ContainsKey(entryKind) || anchorCooldowns[entryKind] <= 0)
-                    {
-                        supportSetupActive = true;
-                        setupSupportAnchor = entryKind == resistanceAnchor.Kind ? resistanceAnchor.Price : supportAnchor.Price;
-                        setupSupportBar = CurrentBar;
-                        setupSupportAnchorKind = entryKind;
-                        if (EnableLogs)
-                            PrintWithContext("SETUP_ARMED side=LONG[congested] kind=" + entryKind + " anchor=" + setupSupportAnchor.ToString("F2"));
-                    }
-                }
+                if (EnableLogs)
+                    PrintWithContext("SIGNAL LONG kind=" + closest.Kind + " avwap=" + avwap.ToString("F2") + " close=" + Close[0].ToString("F2"));
+                TrySubmitEntry(true, avwap, closest.Kind);
             }
-            else
+            else if (shortSignal)
             {
-                // Non-congested — arm each side independently as before
-                if (supportFound && (!anchorCooldowns.ContainsKey(supportAnchor.Kind) || anchorCooldowns[supportAnchor.Kind] <= 0))
-                {
-                    supportSetupActive = true;
-                    setupSupportAnchor = supportAnchor.Price;
-                    setupSupportBar = CurrentBar;
-                    setupSupportAnchorKind = supportAnchor.Kind;
-                    if (EnableLogs)
-                        PrintWithContext("SETUP_ARMED side=LONG kind=" + supportAnchor.Kind + " anchor=" + supportAnchor.Price.ToString("F2"));
-                }
-
-                if (resistanceFound && (!anchorCooldowns.ContainsKey(resistanceAnchor.Kind) || anchorCooldowns[resistanceAnchor.Kind] <= 0))
-                {
-                    resistanceSetupActive = true;
-                    setupResistanceAnchor = resistanceAnchor.Price;
-                    setupResistanceBar = CurrentBar;
-                    setupResistanceAnchorKind = resistanceAnchor.Kind;
-                    if (EnableLogs)
-                        PrintWithContext("SETUP_ARMED side=SHORT kind=" + resistanceAnchor.Kind + " anchor=" + resistanceAnchor.Price.ToString("F2"));
-                }
+                if (EnableLogs)
+                    PrintWithContext("SIGNAL SHORT kind=" + closest.Kind + " avwap=" + avwap.ToString("F2") + " close=" + Close[0].ToString("F2"));
+                TrySubmitEntry(false, avwap, closest.Kind);
             }
         }
 
@@ -408,66 +335,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // choose conservative anchor from anchors clustered within 1 ATR of touched neighborhood
-        private bool TrySelectConservativeAnchor(List<AnchorPoint> anchors, bool forSupport, out AnchorPoint selected)
-        {
-            selected = default(AnchorPoint);
-            if (anchors == null || anchors.Count == 0)
-                return false;
-
-            double touchTol = TouchToleranceTicks * TickSize;
-            var touched = new List<AnchorPoint>();
-            foreach (AnchorPoint a in anchors)
-            {
-                if (Low[0] <= a.Price + touchTol && High[0] >= a.Price - touchTol)
-                    touched.Add(a);
-            }
-
-            if (touched.Count == 0)
-                return false;
-
-            // Start with nearest touched anchor to current close, then expand cluster by ATR distance.
-            AnchorPoint seed = touched[0];
-            double bestDist = Math.Abs(Close[0] - seed.Price);
-            for (int i = 1; i < touched.Count; i++)
-            {
-                double d = Math.Abs(Close[0] - touched[i].Price);
-                if (d < bestDist)
-                {
-                    bestDist = d;
-                    seed = touched[i];
-                }
-            }
-
-            double clusterBand = Math.Max(TickSize, ClusterAtrMultiple * atr[0]);
-            var cluster = new List<AnchorPoint>();
-            foreach (AnchorPoint a in anchors)
-            {
-                if (Math.Abs(a.Price - seed.Price) <= clusterBand)
-                    cluster.Add(a);
-            }
-
-            if (cluster.Count == 0)
-                return false;
-
-            selected = cluster[0];
-            for (int i = 1; i < cluster.Count; i++)
-            {
-                if (forSupport)
-                {
-                    // conservative support = lowest anchor in cluster
-                    if (cluster[i].Price < selected.Price)
-                        selected = cluster[i];
-                }
-                else
-                {
-                    // conservative resistance = highest anchor in cluster
-                    if (cluster[i].Price > selected.Price)
-                        selected = cluster[i];
-                }
-            }
-
-            return true;
-        }
 
         private void UpdateVwapOverlays()
         {
@@ -480,101 +347,34 @@ namespace NinjaTrader.NinjaScript.Strategies
             RemoveDrawObject(WeeklyVwapLabelTag);
         }
 
-        private bool TrySelectConservativeAnchorNearPrice(List<AnchorPoint> anchors, bool forSupport, out AnchorPoint selected)
-        {
-            selected = default(AnchorPoint);
-            if (anchors == null || anchors.Count == 0)
-                return false;
-
-            AnchorPoint seed = anchors[0];
-            double bestDist = Math.Abs(Close[0] - seed.Price);
-            for (int i = 1; i < anchors.Count; i++)
-            {
-                double d = Math.Abs(Close[0] - anchors[i].Price);
-                if (d < bestDist)
-                {
-                    bestDist = d;
-                    seed = anchors[i];
-                }
-            }
-
-            double clusterBand = Math.Max(TickSize, ClusterAtrMultiple * atr[0]);
-            selected = seed;
-            bool found = false;
-            for (int i = 0; i < anchors.Count; i++)
-            {
-                AnchorPoint a = anchors[i];
-                if (Math.Abs(a.Price - seed.Price) > clusterBand)
-                    continue;
-
-                if (!found)
-                {
-                    selected = a;
-                    found = true;
-                    continue;
-                }
-
-                if (forSupport)
-                {
-                    if (a.Price < selected.Price)
-                        selected = a;
-                }
-                else
-                {
-                    if (a.Price > selected.Price)
-                        selected = a;
-                }
-            }
-
-            return found;
-        }
-
         private void UpdateRelevantAnchorOverlays(List<AnchorPoint> anchors)
         {
             if (ChartControl == null)
                 return;
 
-            if (!ShowRelevantAnchorsOnChart)
+            if (!ShowRelevantAnchorsOnChart || anchors == null || anchors.Count == 0)
             {
-                RemoveDrawObject(RelevantSupportLabelTag);
-                RemoveDrawObject(RelevantResistanceLabelTag);
-                HideRelevantAvwap(ref relevantSupportAvwap2);
-                HideRelevantAvwap(ref relevantResistanceAvwap2);
-                relevantSupportAnchorBarIndex = -1;
-                relevantResistanceAnchorBarIndex = -1;
+                RemoveDrawObject(RelevantAnchorLabelTag);
+                HideRelevantAvwap(ref relevantAnchorAvwap2);
+                relevantAnchorBarIndex = -1;
                 return;
             }
 
-            if (TrySelectConservativeAnchorNearPrice(anchors, true, out AnchorPoint support))
+            // Single closest anchor
+            AnchorPoint closest = anchors[0];
+            double bestDist = Math.Abs(Close[0] - closest.Price);
+            for (int i = 1; i < anchors.Count; i++)
             {
-                Draw.Text(this, RelevantSupportLabelTag, "Support: " + support.Kind, 0, support.Price + (4 * TickSize), Brushes.LimeGreen);
-                if (support.BarIndex != relevantSupportAnchorBarIndex && support.BarIndex >= 0 && support.AnchorTime > Core.Globals.MinDate)
-                {
-                    RebuildRelevantAvwap(ref relevantSupportAvwap2, support.AnchorTime, Brushes.LimeGreen);
-                    relevantSupportAnchorBarIndex = support.BarIndex;
-                }
-            }
-            else
-            {
-                RemoveDrawObject(RelevantSupportLabelTag);
-                HideRelevantAvwap(ref relevantSupportAvwap2);
-                relevantSupportAnchorBarIndex = -1;
+                double d = Math.Abs(Close[0] - anchors[i].Price);
+                if (d < bestDist) { bestDist = d; closest = anchors[i]; }
             }
 
-            if (TrySelectConservativeAnchorNearPrice(anchors, false, out AnchorPoint resistance))
+            Draw.Text(this, RelevantAnchorLabelTag, closest.Kind.ToString(), 0, closest.Price + (4 * TickSize), Brushes.DodgerBlue);
+
+            if (closest.BarIndex != relevantAnchorBarIndex && closest.BarIndex >= 0 && closest.AnchorTime > Core.Globals.MinDate)
             {
-                Draw.Text(this, RelevantResistanceLabelTag, "Resistance: " + resistance.Kind, 0, resistance.Price - (4 * TickSize), Brushes.OrangeRed);
-                if (resistance.BarIndex != relevantResistanceAnchorBarIndex && resistance.BarIndex >= 0 && resistance.AnchorTime > Core.Globals.MinDate)
-                {
-                    RebuildRelevantAvwap(ref relevantResistanceAvwap2, resistance.AnchorTime, Brushes.OrangeRed);
-                    relevantResistanceAnchorBarIndex = resistance.BarIndex;
-                }
-            }
-            else
-            {
-                RemoveDrawObject(RelevantResistanceLabelTag);
-                HideRelevantAvwap(ref relevantResistanceAvwap2);
-                relevantResistanceAnchorBarIndex = -1;
+                RebuildRelevantAvwap(ref relevantAnchorAvwap2, closest.AnchorTime, Brushes.DodgerBlue);
+                relevantAnchorBarIndex = closest.BarIndex;
             }
         }
 
@@ -623,10 +423,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             dayLowBarIndex = CurrentBar;
             dailyTrades = 0;
             anchorCooldowns.Clear();
-            supportSetupActive = false;
-            resistanceSetupActive = false;
-            relevantSupportAnchorBarIndex = -1;
-            relevantResistanceAnchorBarIndex = -1;
+            relevantAnchorBarIndex = -1;
         }
 
         private void DecrementAnchorCooldowns()
@@ -1108,9 +905,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int TouchToleranceTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Range(0.5, 2.0)]
-        [Display(Name = "Cluster ATR Multiple", GroupName = "Anchors", Order = 13)]
-        public double ClusterAtrMultiple { get; set; }
+        [Range(2, 20)]
+        [Display(Name = "Recent Bar Lookback", GroupName = "Anchors", Order = 13)]
+        public int RecentBarLookback { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Enable Session VWAP Anchor", GroupName = "Anchors", Order = 14)]
