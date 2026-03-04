@@ -41,6 +41,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const string SessionVwapLabelTag = "ESVwapLite.SessionVWAP.Label";
         private const string WeeklyVwapLineTag = "ESVwapLite.WeeklyVWAP.Line";
         private const string WeeklyVwapLabelTag = "ESVwapLite.WeeklyVWAP.Label";
+        private const string RelevantSupportLineTag = "ESVwapLite.RelevantSupport.Line";
+        private const string RelevantSupportLabelTag = "ESVwapLite.RelevantSupport.Label";
+        private const string RelevantResistanceLineTag = "ESVwapLite.RelevantResistance.Line";
+        private const string RelevantResistanceLabelTag = "ESVwapLite.RelevantResistance.Label";
 
         private ATR atr;
         private TimeZoneInfo cmeTimeZone;
@@ -131,6 +135,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnableWeeklyVwapAnchor = true;
                 ShowSessionVwapOnChart = true;
                 ShowWeeklyVwapOnChart = true;
+                ShowRelevantAnchorsOnChart = true;
                 UseManualAnchors = true;
                 EnableManualAnchorHotkeys = true;
                 EnableLogs = true;
@@ -184,6 +189,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             List<AnchorPoint> anchors = BuildAnchors();
             if (anchors.Count == 0)
                 return;
+
+            UpdateRelevantAnchorOverlays(anchors);
 
             bool touchedAny = false;
             double touchTol = TouchToleranceTicks * TickSize;
@@ -473,6 +480,94 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 RemoveDrawObject(WeeklyVwapLineTag);
                 RemoveDrawObject(WeeklyVwapLabelTag);
+            }
+        }
+
+        private bool TrySelectConservativeAnchorNearPrice(List<AnchorPoint> anchors, bool forSupport, out AnchorPoint selected)
+        {
+            selected = default(AnchorPoint);
+            if (anchors == null || anchors.Count == 0)
+                return false;
+
+            AnchorPoint seed = anchors[0];
+            double bestDist = Math.Abs(Close[0] - seed.Price);
+            for (int i = 1; i < anchors.Count; i++)
+            {
+                double d = Math.Abs(Close[0] - anchors[i].Price);
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    seed = anchors[i];
+                }
+            }
+
+            double clusterBand = Math.Max(TickSize, ClusterAtrMultiple * atr[0]);
+            selected = seed;
+            bool found = false;
+            for (int i = 0; i < anchors.Count; i++)
+            {
+                AnchorPoint a = anchors[i];
+                if (Math.Abs(a.Price - seed.Price) > clusterBand)
+                    continue;
+
+                if (!found)
+                {
+                    selected = a;
+                    found = true;
+                    continue;
+                }
+
+                if (forSupport)
+                {
+                    if (a.Price < selected.Price)
+                        selected = a;
+                }
+                else
+                {
+                    if (a.Price > selected.Price)
+                        selected = a;
+                }
+            }
+
+            return found;
+        }
+
+        private void UpdateRelevantAnchorOverlays(List<AnchorPoint> anchors)
+        {
+            if (ChartControl == null)
+                return;
+
+            if (!ShowRelevantAnchorsOnChart)
+            {
+                RemoveDrawObject(RelevantSupportLineTag);
+                RemoveDrawObject(RelevantSupportLabelTag);
+                RemoveDrawObject(RelevantResistanceLineTag);
+                RemoveDrawObject(RelevantResistanceLabelTag);
+                return;
+            }
+
+            int startBarsAgo = Math.Min(CurrentBar, 200);
+
+            if (TrySelectConservativeAnchorNearPrice(anchors, true, out AnchorPoint support))
+            {
+                Draw.Line(this, RelevantSupportLineTag, false, startBarsAgo, support.Price, 0, support.Price, Brushes.LimeGreen, DashStyleHelper.Dot, 2);
+                Draw.Text(this, RelevantSupportLabelTag, "Relevant Support: " + support.Kind, 0, support.Price + (4 * TickSize), Brushes.LimeGreen);
+            }
+            else
+            {
+                RemoveDrawObject(RelevantSupportLineTag);
+                RemoveDrawObject(RelevantSupportLabelTag);
+            }
+
+            if (TrySelectConservativeAnchorNearPrice(anchors, false, out AnchorPoint resistance))
+            {
+                Draw.Line(this, RelevantResistanceLineTag, false, startBarsAgo, resistance.Price, 0, resistance.Price, Brushes.OrangeRed, DashStyleHelper.Dot, 2);
+                Draw.Text(this, RelevantResistanceLabelTag, "Relevant Resistance: " + resistance.Kind, 0, resistance.Price - (4 * TickSize), Brushes.OrangeRed);
+            }
+            else
+            {
+                RemoveDrawObject(RelevantResistanceLineTag);
+                RemoveDrawObject(RelevantResistanceLabelTag);
             }
         }
 
@@ -991,7 +1086,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool ShowWeeklyVwapOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 19)]
+        [Display(Name = "Show Relevant Anchors On Chart", GroupName = "Anchors", Order = 19)]
+        public bool ShowRelevantAnchorsOnChart { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 20)]
         public bool EnableManualAnchorHotkeys { get; set; }
 
         [Browsable(false)]
@@ -1001,7 +1100,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public DateTime ManualShortAnchorFrom { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 20)]
+        [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 21)]
         public bool EnableLogs { get; set; }
 
         #endregion
