@@ -132,6 +132,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TouchToleranceTicks = 2;
                 RecentBarLookback = 5;
                 SetupMaxBars = 5;
+                ExtremeEstablishAtrMultiple = 2.0;
 
                 EnableSessionVwapAnchor = true;
                 EnableWeeklyVwapAnchor = true;
@@ -384,6 +385,24 @@ namespace NinjaTrader.NinjaScript.Strategies
             return quantity >= 1;
         }
 
+        private bool IsLodEstablished()
+        {
+            if (double.IsNaN(atr[0]) || atr[0] <= 0)
+                return false;
+
+            double requiredMove = ExtremeEstablishAtrMultiple * atr[0];
+            return (High[0] - dayLow) >= requiredMove;
+        }
+
+        private bool IsHodEstablished()
+        {
+            if (double.IsNaN(atr[0]) || atr[0] <= 0)
+                return false;
+
+            double requiredMove = ExtremeEstablishAtrMultiple * atr[0];
+            return (dayHigh - Low[0]) >= requiredMove;
+        }
+
         private List<AnchorPoint> BuildAnchors()
         {
             var list = new List<AnchorPoint>();
@@ -402,14 +421,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                     list.Add(new AnchorPoint { Kind = AnchorKind.WeeklyVWAP, Price = w, BarIndex = wtdAnchorBarIndex, AnchorTime = wtdAnchorTime });
             }
 
-            if (dayHighBarIndex >= 0)
+            if (dayHighBarIndex >= 0 && IsHodEstablished())
             {
                 double h = GetAvwapFromBar(dayHighBarIndex, dayHigh);
                 if (!double.IsNaN(h))
                     list.Add(new AnchorPoint { Kind = AnchorKind.HOD, Price = h, BarIndex = dayHighBarIndex, AnchorTime = dayHighTime });
             }
 
-            if (dayLowBarIndex >= 0)
+            if (dayLowBarIndex >= 0 && IsLodEstablished())
             {
                 double l = GetAvwapFromBar(dayLowBarIndex, dayLow);
                 if (!double.IsNaN(l))
@@ -999,31 +1018,36 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int SetupMaxBars { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Session VWAP Anchor", GroupName = "Anchors", Order = 15)]
+        [Range(0.5, 5.0)]
+        [Display(Name = "Extreme Establish ATR Multiple", GroupName = "Anchors", Order = 15)]
+        public double ExtremeEstablishAtrMultiple { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Session VWAP Anchor", GroupName = "Anchors", Order = 16)]
         public bool EnableSessionVwapAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Weekly VWAP Anchor", GroupName = "Anchors", Order = 16)]
+        [Display(Name = "Enable Weekly VWAP Anchor", GroupName = "Anchors", Order = 17)]
         public bool EnableWeeklyVwapAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Use Manual Anchors", GroupName = "Anchors", Order = 17)]
+        [Display(Name = "Use Manual Anchors", GroupName = "Anchors", Order = 18)]
         public bool UseManualAnchors { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Session VWAP On Chart", GroupName = "Anchors", Order = 18)]
+        [Display(Name = "Show Session VWAP On Chart", GroupName = "Anchors", Order = 19)]
         public bool ShowSessionVwapOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Weekly VWAP On Chart", GroupName = "Anchors", Order = 19)]
+        [Display(Name = "Show Weekly VWAP On Chart", GroupName = "Anchors", Order = 20)]
         public bool ShowWeeklyVwapOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Relevant Anchors On Chart", GroupName = "Anchors", Order = 20)]
+        [Display(Name = "Show Relevant Anchors On Chart", GroupName = "Anchors", Order = 21)]
         public bool ShowRelevantAnchorsOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 21)]
+        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 22)]
         public bool EnableManualAnchorHotkeys { get; set; }
 
         [Browsable(false)]
@@ -1033,7 +1057,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         public DateTime ManualShortAnchorFrom { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 22)]
+        [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 23)]
         public bool EnableLogs { get; set; }
 
         #endregion
