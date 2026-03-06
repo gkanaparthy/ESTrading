@@ -85,8 +85,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int dailyTrades;
         private Dictionary<AnchorKind, int> anchorCooldowns = new Dictionary<AnchorKind, int>();
         private Dictionary<string, int> anchorUsageCounts = new Dictionary<string, int>();
-        private Dictionary<string, double> retradeAnchorPrice = new Dictionary<string, double>();
-        private Dictionary<string, bool> retradeNeedsExcursion = new Dictionary<string, bool>();
+        private Dictionary<string, double> zoneLockPrice = new Dictionary<string, double>();
+        private Dictionary<string, bool> zoneNeedsExcursion = new Dictionary<string, bool>();
 
         // setup state
         private bool setupActive;
@@ -94,6 +94,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double setupAnchorPrice;
         private int setupBar;
         private AnchorKind setupAnchorKind;
+        private string setupZoneId;
 
         // break-even management
         private string activeSignalName;
@@ -127,7 +128,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MaxTradesPerDay = 1000;
                 SignalCooldownBars = 2;
                 MinAtrForEntry = 0.8;
-                MaxAtrForEntry = 14.0;
+                MaxAtrForEntry = 10.0;
 
                 // risk: recent peak/trough distance, capped/floored
                 StopSwingLookbackBars = 8;
@@ -220,6 +221,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             AnchorPoint selected = anchors[0];
             bool touch = touched.Count > 0;
             bool inferredLong = false;
+            string zoneId = "";
             if (touch)
             {
                 AnchorPoint seed = touched[0];
@@ -234,7 +236,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                 }
 
-                double clusterBand = Math.Max(TickSize, atrVal); // 1 ATR zone as requested
+                double clusterBand = Math.Max(TickSize, atrVal); // overlap band: 1 ATR
                 var cluster = new List<AnchorPoint>();
                 for (int i = 0; i < anchors.Count; i++)
                 {
@@ -262,11 +264,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                             selected = cluster[i];
                     }
                 }
+
+                var zoneKinds = new List<string>();
+                for (int i = 0; i < cluster.Count; i++)
+                    zoneKinds.Add(cluster[i].Kind.ToString());
+                zoneKinds.Sort(StringComparer.Ordinal);
+                zoneId = string.Join("|", zoneKinds);
             }
 
             double avwap = selected.Price;
 
-            UpdateRetradeExcursionState(atrVal);
+            UpdateZoneExcursionState(atrVal);
 
             // confirmation stage: once setup is armed, wait for first directional candle (no anchor-switch cancellation)
             if (setupActive && setupBar < CurrentBar)
@@ -286,14 +294,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (EnableLogs)
                         PrintWithContext("SETUP_CANCELLED timeout kind=" + setupAnchorKind + " side=" + (setupIsLong ? "L" : "S"));
                     setupActive = false;
+                    setupZoneId = null;
                 }
                 else if (setupIsLong)
                 {
                     // keep waiting while close is below anchor; do not cancel until timeout
                     if (Close[0] > Open[0] && Close[0] >= liveAvwap)
                     {
-                        TrySubmitEntry(true, liveAvwap, setupAnchorKind);
+                        TrySubmitEntry(true, liveAvwap, setupAnchorKind, setupZoneId);
                         setupActive = false;
+                        setupZoneId = null;
                         return;
                     }
                 }
@@ -302,8 +312,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // keep waiting while close is above anchor; do not cancel until timeout
                     if (Close[0] < Open[0] && Close[0] <= liveAvwap)
                     {
-                        TrySubmitEntry(false, liveAvwap, setupAnchorKind);
+                        TrySubmitEntry(false, liveAvwap, setupAnchorKind, setupZoneId);
                         setupActive = false;
+                        setupZoneId = null;
                         return;
                     }
                 }
@@ -332,12 +343,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (touch && !setupActive)
             {
                 bool candidateLong = inferredLong;
-                string candidateKey = (candidateLong ? "L" : "S") + "-" + selected.Kind;
 
-                if (EnableRetradeExcursionFilter && retradeNeedsExcursion.ContainsKey(candidateKey) && retradeNeedsExcursion[candidateKey])
+                if (EnableRetradeExcursionFilter && !string.IsNullOrEmpty(zoneId) && zoneNeedsExcursion.ContainsKey(zoneId) && zoneNeedsExcursion[zoneId])
                 {
                     if (EnableLogs)
-                        PrintWithContext("SETUP_BLOCKED reason=NoRetradeExcursion key=" + candidateKey + " anchor=" + avwap.ToString("F2"));
+                        PrintWithContext("SETUP_BLOCKED reason=ZoneLocked zone=" + zoneId + " anchor=" + avwap.ToString("F2"));
                     return;
                 }
 
@@ -346,13 +356,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 setupAnchorPrice = avwap;
                 setupBar = CurrentBar;
                 setupAnchorKind = selected.Kind;
+                setupZoneId = zoneId;
 
                 if (EnableLogs)
-                    PrintWithContext("SETUP_ARMED side=" + (setupIsLong ? "LONG" : "SHORT") + " kind=" + selected.Kind + " avwap=" + avwap.ToString("F2"));
+                    PrintWithContext("SETUP_ARMED side=" + (setupIsLong ? "LONG" : "SHORT") + " kind=" + selected.Kind + " zone=" + zoneId + " avwap=" + avwap.ToString("F2"));
             }
         }
 
-        private void TrySubmitEntry(bool isLong, double anchorUsed, AnchorKind anchorKind)
+        private void TrySubmitEntry(bool isLong, double anchorUsed, AnchorKind anchorKind, string zoneId)
         {
             int stopTicks = ComputeSwingStopTicks(isLong);
             int quantity = DefaultQuantity;
@@ -377,9 +388,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             string signal = usageKey + "-" + nextCount;
 
-            // require 1 ATR excursion away from this anchor before same side+anchor can re-trade
-            retradeAnchorPrice[usageKey] = anchorUsed;
-            retradeNeedsExcursion[usageKey] = true;
+            // zone-level lock: any trade in overlap zone locks both directions until excursion
+            if (EnableRetradeExcursionFilter && !string.IsNullOrEmpty(zoneId))
+            {
+                zoneLockPrice[zoneId] = anchorUsed;
+                zoneNeedsExcursion[zoneId] = true;
+            }
 
             SetStopLoss(signal, CalculationMode.Ticks, stopTicks, false);
             SetProfitTarget(signal, CalculationMode.Ticks, targetTicks);
@@ -444,37 +458,33 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        private void UpdateRetradeExcursionState(double atrVal)
+        private void UpdateZoneExcursionState(double atrVal)
         {
             if (!EnableRetradeExcursionFilter || double.IsNaN(atrVal) || atrVal <= 0)
                 return;
 
             double required = RetradeExcursionAtrMultiple * atrVal;
-            var keys = new List<string>(retradeNeedsExcursion.Keys);
-            for (int i = 0; i < keys.Count; i++)
+            var zones = new List<string>(zoneNeedsExcursion.Keys);
+            for (int i = 0; i < zones.Count; i++)
             {
-                string key = keys[i];
-                if (!retradeNeedsExcursion[key])
+                string zone = zones[i];
+                if (!zoneNeedsExcursion[zone])
                     continue;
 
-                if (!retradeAnchorPrice.ContainsKey(key))
+                if (!zoneLockPrice.ContainsKey(zone))
                 {
-                    retradeNeedsExcursion[key] = false;
+                    zoneNeedsExcursion[zone] = false;
                     continue;
                 }
 
-                double anchor = retradeAnchorPrice[key];
-                bool satisfied = false;
-                if (key.StartsWith("L-"))
-                    satisfied = High[0] >= anchor + required;
-                else if (key.StartsWith("S-"))
-                    satisfied = Low[0] <= anchor - required;
+                double anchor = zoneLockPrice[zone];
+                bool satisfied = Math.Abs(Close[0] - anchor) >= required;
 
                 if (satisfied)
                 {
-                    retradeNeedsExcursion[key] = false;
+                    zoneNeedsExcursion[zone] = false;
                     if (EnableLogs)
-                        PrintWithContext("RETRADE_UNLOCKED key=" + key + " anchor=" + anchor.ToString("F2") + " requiredMove=" + required.ToString("F2"));
+                        PrintWithContext("ZONE_UNLOCKED zone=" + zone + " anchor=" + anchor.ToString("F2") + " requiredMove=" + required.ToString("F2"));
                 }
             }
         }
@@ -651,9 +661,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             dailyTrades = 0;
             anchorCooldowns.Clear();
             anchorUsageCounts.Clear();
-            retradeAnchorPrice.Clear();
-            retradeNeedsExcursion.Clear();
+            zoneLockPrice.Clear();
+            zoneNeedsExcursion.Clear();
             setupActive = false;
+            setupZoneId = null;
             HideRelevantAvwap(ref relevantAnchorAvwap2);
             relevantAnchorBarIndex = -1;
         }
