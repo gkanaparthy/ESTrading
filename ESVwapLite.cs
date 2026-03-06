@@ -92,6 +92,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int setupBar;
         private AnchorKind setupAnchorKind;
 
+        // break-even management
+        private string activeSignalName;
+        private int activeRiskTicks;
+        private bool breakEvenMoved;
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -127,6 +132,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MaxStopPoints = 5.0;
                 RiskRewardMultiple = 3.0;
                 MaxRiskPerTradeDollars = 400.0;
+                EnableBreakEven = true;
+                BreakEvenTriggerR = 1.5;
+                BreakEvenPlusTicks = 1;
 
                 // touch/zone behavior
                 TouchToleranceTicks = 2;
@@ -178,7 +186,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             DecrementAnchorCooldowns();
 
             if (Position.MarketPosition != MarketPosition.Flat)
+            {
+                ManageBreakEven();
                 return;
+            }
+
+            // reset active-trade state when flat
+            activeSignalName = null;
+            activeRiskTicks = 0;
+            breakEvenMoved = false;
 
             if (anchors.Count == 0)
                 return;
@@ -338,6 +354,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             SetStopLoss(signal, CalculationMode.Ticks, stopTicks, false);
             SetProfitTarget(signal, CalculationMode.Ticks, targetTicks);
 
+            activeSignalName = signal;
+            activeRiskTicks = stopTicks;
+            breakEvenMoved = false;
+
             if (isLong)
                 EnterLong(quantity, signal);
             else
@@ -356,6 +376,41 @@ namespace NinjaTrader.NinjaScript.Strategies
                                  " targetTicks=" + targetTicks +
                                  " rr=" + RiskRewardMultiple.ToString("F1") +
                                  " qty=" + quantity);
+            }
+        }
+
+        private void ManageBreakEven()
+        {
+            if (!EnableBreakEven || breakEvenMoved || activeRiskTicks <= 0 || string.IsNullOrEmpty(activeSignalName))
+                return;
+
+            if (Position.MarketPosition == MarketPosition.Flat)
+                return;
+
+            double avg = Position.AveragePrice;
+            double triggerMove = BreakEvenTriggerR * activeRiskTicks * TickSize;
+
+            if (Position.MarketPosition == MarketPosition.Long)
+            {
+                if (Close[0] >= avg + triggerMove)
+                {
+                    double bePrice = Instrument.MasterInstrument.RoundToTickSize(avg + (BreakEvenPlusTicks * TickSize));
+                    SetStopLoss(activeSignalName, CalculationMode.Price, bePrice, false);
+                    breakEvenMoved = true;
+                    if (EnableLogs)
+                        PrintWithContext("BREAK_EVEN_MOVED side=LONG signal=" + activeSignalName + " stop=" + bePrice.ToString("F2"));
+                }
+            }
+            else if (Position.MarketPosition == MarketPosition.Short)
+            {
+                if (Close[0] <= avg - triggerMove)
+                {
+                    double bePrice = Instrument.MasterInstrument.RoundToTickSize(avg - (BreakEvenPlusTicks * TickSize));
+                    SetStopLoss(activeSignalName, CalculationMode.Price, bePrice, false);
+                    breakEvenMoved = true;
+                    if (EnableLogs)
+                        PrintWithContext("BREAK_EVEN_MOVED side=SHORT signal=" + activeSignalName + " stop=" + bePrice.ToString("F2"));
+                }
             }
         }
 
@@ -1009,6 +1064,20 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(50.0, 5000.0)]
         [Display(Name = "Max Risk Per Trade ($)", GroupName = "Risk", Order = 11)]
         public double MaxRiskPerTradeDollars { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Break Even", GroupName = "Risk", Order = 12)]
+        public bool EnableBreakEven { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.5, 3.0)]
+        [Display(Name = "Break Even Trigger (R)", GroupName = "Risk", Order = 13)]
+        public double BreakEvenTriggerR { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 10)]
+        [Display(Name = "Break Even Plus Ticks", GroupName = "Risk", Order = 14)]
+        public int BreakEvenPlusTicks { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
