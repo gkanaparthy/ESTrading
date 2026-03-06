@@ -87,6 +87,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private Dictionary<string, int> anchorUsageCounts = new Dictionary<string, int>();
         private Dictionary<string, double> zoneLockPrice = new Dictionary<string, double>();
         private Dictionary<string, bool> zoneNeedsExcursion = new Dictionary<string, bool>();
+        private Dictionary<string, int> zoneTradeCount = new Dictionary<string, int>();
 
         // setup state
         private bool setupActive;
@@ -141,6 +142,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BreakEvenPlusTicks = 1;
                 EnableRetradeExcursionFilter = true;
                 RetradeExcursionAtrMultiple = 1.0;
+                MaxTradesPerZoneCycle = 2;
+                ConfirmBodyAtrMultiple = 0.2;
 
                 // touch/zone behavior
                 TouchToleranceTicks = 2;
@@ -265,11 +268,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                 }
 
-                var zoneKinds = new List<string>();
+                double zoneCenter = 0;
                 for (int i = 0; i < cluster.Count; i++)
-                    zoneKinds.Add(cluster[i].Kind.ToString());
-                zoneKinds.Sort(StringComparer.Ordinal);
-                zoneId = string.Join("|", zoneKinds);
+                    zoneCenter += cluster[i].Price;
+                zoneCenter /= Math.Max(1, cluster.Count);
+
+                double bucketSize = Math.Max(4 * TickSize, atrVal * 0.5);
+                long bucket = (long)Math.Round(zoneCenter / bucketSize);
+                zoneId = "Z" + bucket;
             }
 
             double avwap = selected.Price;
@@ -299,7 +305,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 else if (setupIsLong)
                 {
                     // keep waiting while close is below anchor; do not cancel until timeout
-                    if (Close[0] > Open[0] && Close[0] >= liveAvwap)
+                    double body = Math.Abs(Close[0] - Open[0]);
+                    bool bodyOk = body >= (ConfirmBodyAtrMultiple * atrVal);
+                    if (Close[0] > Open[0] && Close[0] >= liveAvwap && bodyOk)
                     {
                         TrySubmitEntry(true, liveAvwap, setupAnchorKind, setupZoneId);
                         setupActive = false;
@@ -310,7 +318,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 else
                 {
                     // keep waiting while close is above anchor; do not cancel until timeout
-                    if (Close[0] < Open[0] && Close[0] <= liveAvwap)
+                    double body = Math.Abs(Close[0] - Open[0]);
+                    bool bodyOk = body >= (ConfirmBodyAtrMultiple * atrVal);
+                    if (Close[0] < Open[0] && Close[0] <= liveAvwap && bodyOk)
                     {
                         TrySubmitEntry(false, liveAvwap, setupAnchorKind, setupZoneId);
                         setupActive = false;
@@ -346,9 +356,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 if (EnableRetradeExcursionFilter && !string.IsNullOrEmpty(zoneId) && zoneNeedsExcursion.ContainsKey(zoneId) && zoneNeedsExcursion[zoneId])
                 {
-                    if (EnableLogs)
-                        PrintWithContext("SETUP_BLOCKED reason=ZoneLocked zone=" + zoneId + " anchor=" + avwap.ToString("F2"));
-                    return;
+                    int zCount = zoneTradeCount.ContainsKey(zoneId) ? zoneTradeCount[zoneId] : 0;
+                    if (zCount >= MaxTradesPerZoneCycle)
+                    {
+                        if (EnableLogs)
+                            PrintWithContext("SETUP_BLOCKED reason=ZoneTradeCap zone=" + zoneId + " count=" + zCount + " anchor=" + avwap.ToString("F2"));
+                        return;
+                    }
                 }
 
                 setupIsLong = candidateLong;
@@ -393,6 +407,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 zoneLockPrice[zoneId] = anchorUsed;
                 zoneNeedsExcursion[zoneId] = true;
+                int zCount = zoneTradeCount.ContainsKey(zoneId) ? zoneTradeCount[zoneId] : 0;
+                zoneTradeCount[zoneId] = zCount + 1;
             }
 
             SetStopLoss(signal, CalculationMode.Ticks, stopTicks, false);
@@ -483,6 +499,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (satisfied)
                 {
                     zoneNeedsExcursion[zone] = false;
+                    zoneTradeCount[zone] = 0;
                     if (EnableLogs)
                         PrintWithContext("ZONE_UNLOCKED zone=" + zone + " anchor=" + anchor.ToString("F2") + " requiredMove=" + required.ToString("F2"));
                 }
@@ -663,6 +680,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             anchorUsageCounts.Clear();
             zoneLockPrice.Clear();
             zoneNeedsExcursion.Clear();
+            zoneTradeCount.Clear();
             setupActive = false;
             setupZoneId = null;
             HideRelevantAvwap(ref relevantAnchorAvwap2);
@@ -1166,6 +1184,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(0.5, 3.0)]
         [Display(Name = "Re-trade Excursion ATR Multiple", GroupName = "Risk", Order = 16)]
         public double RetradeExcursionAtrMultiple { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 10)]
+        [Display(Name = "Max Trades Per Zone Cycle", GroupName = "Risk", Order = 17)]
+        public int MaxTradesPerZoneCycle { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.05, 1.0)]
+        [Display(Name = "Confirm Body ATR Multiple", GroupName = "Risk", Order = 18)]
+        public double ConfirmBodyAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
