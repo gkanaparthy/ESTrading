@@ -262,17 +262,25 @@ namespace NinjaTrader.NinjaScript.Strategies
                         PrintWithContext("SETUP_CANCELLED timeout kind=" + setupAnchorKind + " side=" + (setupIsLong ? "L" : "S"));
                     setupActive = false;
                 }
-                else if (setupIsLong && Close[0] > Open[0])
+                else if (setupIsLong)
                 {
-                    TrySubmitEntry(true, liveAvwap, setupAnchorKind);
-                    setupActive = false;
-                    return;
+                    // keep waiting while close is below anchor; do not cancel until timeout
+                    if (Close[0] > Open[0] && Close[0] >= liveAvwap)
+                    {
+                        TrySubmitEntry(true, liveAvwap, setupAnchorKind);
+                        setupActive = false;
+                        return;
+                    }
                 }
-                else if (!setupIsLong && Close[0] < Open[0])
+                else
                 {
-                    TrySubmitEntry(false, liveAvwap, setupAnchorKind);
-                    setupActive = false;
-                    return;
+                    // keep waiting while close is above anchor; do not cancel until timeout
+                    if (Close[0] < Open[0] && Close[0] <= liveAvwap)
+                    {
+                        TrySubmitEntry(false, liveAvwap, setupAnchorKind);
+                        setupActive = false;
+                        return;
+                    }
                 }
             }
 
