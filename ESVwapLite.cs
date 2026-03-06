@@ -85,6 +85,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int dailyTrades;
         private Dictionary<AnchorKind, int> anchorCooldowns = new Dictionary<AnchorKind, int>();
         private Dictionary<string, int> anchorUsageCounts = new Dictionary<string, int>();
+        private Dictionary<string, double> retradeAnchorPrice = new Dictionary<string, double>();
+        private Dictionary<string, bool> retradeNeedsExcursion = new Dictionary<string, bool>();
 
         // setup state
         private bool setupActive;
@@ -136,6 +138,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnableBreakEven = true;
                 BreakEvenTriggerR = 1.5;
                 BreakEvenPlusTicks = 1;
+                EnableRetradeExcursionFilter = true;
+                RetradeExcursionAtrMultiple = 1.0;
 
                 // touch/zone behavior
                 TouchToleranceTicks = 2;
@@ -262,6 +266,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             double avwap = selected.Price;
 
+            UpdateRetradeExcursionState(atrVal);
+
             // confirmation stage: once setup is armed, wait for first directional candle (no anchor-switch cancellation)
             if (setupActive && setupBar < CurrentBar)
             {
@@ -325,7 +331,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             // touch arms one latched setup and keeps it fixed until confirm/timeout
             if (touch && !setupActive)
             {
-                setupIsLong = inferredLong;
+                bool candidateLong = inferredLong;
+                string candidateKey = (candidateLong ? "L" : "S") + "-" + selected.Kind;
+
+                if (EnableRetradeExcursionFilter && retradeNeedsExcursion.ContainsKey(candidateKey) && retradeNeedsExcursion[candidateKey])
+                {
+                    if (EnableLogs)
+                        PrintWithContext("SETUP_BLOCKED reason=NoRetradeExcursion key=" + candidateKey + " anchor=" + avwap.ToString("F2"));
+                    return;
+                }
+
+                setupIsLong = candidateLong;
                 setupActive = true;
                 setupAnchorPrice = avwap;
                 setupBar = CurrentBar;
@@ -360,6 +376,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             anchorUsageCounts[usageKey] = nextCount;
 
             string signal = usageKey + "-" + nextCount;
+
+            // require 1 ATR excursion away from this anchor before same side+anchor can re-trade
+            retradeAnchorPrice[usageKey] = anchorUsed;
+            retradeNeedsExcursion[usageKey] = true;
 
             SetStopLoss(signal, CalculationMode.Ticks, stopTicks, false);
             SetProfitTarget(signal, CalculationMode.Ticks, targetTicks);
@@ -420,6 +440,41 @@ namespace NinjaTrader.NinjaScript.Strategies
                     breakEvenMoved = true;
                     if (EnableLogs)
                         PrintWithContext("BREAK_EVEN_MOVED side=SHORT signal=" + activeSignalName + " stop=" + bePrice.ToString("F2"));
+                }
+            }
+        }
+
+        private void UpdateRetradeExcursionState(double atrVal)
+        {
+            if (!EnableRetradeExcursionFilter || double.IsNaN(atrVal) || atrVal <= 0)
+                return;
+
+            double required = RetradeExcursionAtrMultiple * atrVal;
+            var keys = new List<string>(retradeNeedsExcursion.Keys);
+            for (int i = 0; i < keys.Count; i++)
+            {
+                string key = keys[i];
+                if (!retradeNeedsExcursion[key])
+                    continue;
+
+                if (!retradeAnchorPrice.ContainsKey(key))
+                {
+                    retradeNeedsExcursion[key] = false;
+                    continue;
+                }
+
+                double anchor = retradeAnchorPrice[key];
+                bool satisfied = false;
+                if (key.StartsWith("L-"))
+                    satisfied = High[0] >= anchor + required;
+                else if (key.StartsWith("S-"))
+                    satisfied = Low[0] <= anchor - required;
+
+                if (satisfied)
+                {
+                    retradeNeedsExcursion[key] = false;
+                    if (EnableLogs)
+                        PrintWithContext("RETRADE_UNLOCKED key=" + key + " anchor=" + anchor.ToString("F2") + " requiredMove=" + required.ToString("F2"));
                 }
             }
         }
@@ -596,6 +651,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             dailyTrades = 0;
             anchorCooldowns.Clear();
             anchorUsageCounts.Clear();
+            retradeAnchorPrice.Clear();
+            retradeNeedsExcursion.Clear();
             setupActive = false;
             HideRelevantAvwap(ref relevantAnchorAvwap2);
             relevantAnchorBarIndex = -1;
@@ -1089,6 +1146,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(0, 10)]
         [Display(Name = "Break Even Plus Ticks", GroupName = "Risk", Order = 14)]
         public int BreakEvenPlusTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Re-trade Excursion Filter", GroupName = "Risk", Order = 15)]
+        public bool EnableRetradeExcursionFilter { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.5, 3.0)]
+        [Display(Name = "Re-trade Excursion ATR Multiple", GroupName = "Risk", Order = 16)]
+        public double RetradeExcursionAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
