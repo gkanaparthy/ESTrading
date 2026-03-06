@@ -84,6 +84,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int dayLowBarIndex = -1;
         private int dailyTrades;
         private Dictionary<AnchorKind, int> anchorCooldowns = new Dictionary<AnchorKind, int>();
+        private Dictionary<string, int> anchorUsageCounts = new Dictionary<string, int>();
 
         // setup state
         private bool setupActive;
@@ -351,7 +352,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             int targetTicks = Math.Max(stopTicks + 1, (int)Math.Round(stopTicks * RiskRewardMultiple));
-            string signal = (isLong ? "L" : "S") + "-" + Time[0].ToString("yyyyMMddHHmmss");
+            string side = isLong ? "L" : "S";
+            string usageKey = side + "-" + anchorKind;
+            int nextCount = 1;
+            if (anchorUsageCounts.ContainsKey(usageKey))
+                nextCount = anchorUsageCounts[usageKey] + 1;
+            anchorUsageCounts[usageKey] = nextCount;
+
+            string signal = usageKey + "-" + nextCount;
 
             SetStopLoss(signal, CalculationMode.Ticks, stopTicks, false);
             SetProfitTarget(signal, CalculationMode.Ticks, targetTicks);
@@ -587,6 +595,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             dayLowTime = Time[0];
             dailyTrades = 0;
             anchorCooldowns.Clear();
+            anchorUsageCounts.Clear();
             setupActive = false;
             HideRelevantAvwap(ref relevantAnchorAvwap2);
             relevantAnchorBarIndex = -1;
