@@ -43,6 +43,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const int CmeRthStart = 83000;
         private const int CmeRthEnd = 150000;
         private const string RelevantAnchorLabelTag = "ESVwapLite.RelevantAnchor.Label";
+        private const string PrevSessionHighLineTag = "ESVwapLite.Level.PrevSessionHigh.Line";
+        private const string PrevSessionLowLineTag = "ESVwapLite.Level.PrevSessionLow.Line";
+        private const string PreMarketHighLineTag = "ESVwapLite.Level.PreMarketHigh.Line";
+        private const string PreMarketLowLineTag = "ESVwapLite.Level.PreMarketLow.Line";
+        private const string PrevSessionHighLabelTag = "ESVwapLite.Level.PrevSessionHigh.Label";
+        private const string PrevSessionLowLabelTag = "ESVwapLite.Level.PrevSessionLow.Label";
+        private const string PreMarketHighLabelTag = "ESVwapLite.Level.PreMarketHigh.Label";
+        private const string PreMarketLowLabelTag = "ESVwapLite.Level.PreMarketLow.Label";
 
         private ATR atr;
         private TimeZoneInfo cmeTimeZone;
@@ -170,6 +178,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnableSessionLevels = true;
                 ShowSessionVwapOnChart = true;
                 ShowWeeklyVwapOnChart = true;
+                ShowSessionLevelsOnChart = true;
                 ShowRelevantAnchorsOnChart = true;
                 UseManualAnchors = true;
                 EnableManualAnchorHotkeys = true;
@@ -206,6 +215,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // Build anchors and update chart overlay — always, regardless of position
             List<AnchorPoint> anchors = BuildAnchors();
+            UpdateSessionLevelOverlays();
             UpdateRelevantAnchorOverlays(anchors);
             DecrementAnchorCooldowns();
 
@@ -637,6 +647,62 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // choose conservative anchor from anchors clustered within 1 ATR of touched neighborhood
+
+        private void UpdateSessionLevelOverlays()
+        {
+            if (ChartControl == null || !ShowSessionLevelsOnChart || !EnableSessionLevels)
+            {
+                RemoveSessionLevelDrawObjects();
+                return;
+            }
+
+            var prevHighBrush = new SolidColorBrush(Color.FromArgb(110, 78, 121, 167));   // muted steel blue
+            var prevLowBrush = new SolidColorBrush(Color.FromArgb(110, 72, 160, 140));    // muted teal
+            var preHighBrush = new SolidColorBrush(Color.FromArgb(110, 181, 142, 76));    // muted amber
+            var preLowBrush = new SolidColorBrush(Color.FromArgb(110, 147, 109, 184));    // muted violet
+
+            if (hasPrevSessionLevels)
+            {
+                Draw.HorizontalLine(this, PrevSessionHighLineTag, prevSessionHigh, prevHighBrush);
+                Draw.HorizontalLine(this, PrevSessionLowLineTag, prevSessionLow, prevLowBrush);
+                Draw.Text(this, PrevSessionHighLabelTag, "Prev High", 0, prevSessionHigh + (2 * TickSize), prevHighBrush);
+                Draw.Text(this, PrevSessionLowLabelTag, "Prev Low", 0, prevSessionLow - (2 * TickSize), prevLowBrush);
+            }
+            else
+            {
+                RemoveDrawObject(PrevSessionHighLineTag);
+                RemoveDrawObject(PrevSessionLowLineTag);
+                RemoveDrawObject(PrevSessionHighLabelTag);
+                RemoveDrawObject(PrevSessionLowLabelTag);
+            }
+
+            if (hasPreMarketLevels)
+            {
+                Draw.HorizontalLine(this, PreMarketHighLineTag, preMarketHigh, preHighBrush);
+                Draw.HorizontalLine(this, PreMarketLowLineTag, preMarketLow, preLowBrush);
+                Draw.Text(this, PreMarketHighLabelTag, "PM High", 0, preMarketHigh + (2 * TickSize), preHighBrush);
+                Draw.Text(this, PreMarketLowLabelTag, "PM Low", 0, preMarketLow - (2 * TickSize), preLowBrush);
+            }
+            else
+            {
+                RemoveDrawObject(PreMarketHighLineTag);
+                RemoveDrawObject(PreMarketLowLineTag);
+                RemoveDrawObject(PreMarketHighLabelTag);
+                RemoveDrawObject(PreMarketLowLabelTag);
+            }
+        }
+
+        private void RemoveSessionLevelDrawObjects()
+        {
+            RemoveDrawObject(PrevSessionHighLineTag);
+            RemoveDrawObject(PrevSessionLowLineTag);
+            RemoveDrawObject(PreMarketHighLineTag);
+            RemoveDrawObject(PreMarketLowLineTag);
+            RemoveDrawObject(PrevSessionHighLabelTag);
+            RemoveDrawObject(PrevSessionLowLabelTag);
+            RemoveDrawObject(PreMarketHighLabelTag);
+            RemoveDrawObject(PreMarketLowLabelTag);
+        }
 
         private void UpdateRelevantAnchorOverlays(List<AnchorPoint> anchors)
         {
@@ -1315,11 +1381,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool ShowWeeklyVwapOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Relevant Anchors On Chart", GroupName = "Anchors", Order = 24)]
+        [Display(Name = "Show Session Levels On Chart", GroupName = "Anchors", Order = 24)]
+        public bool ShowSessionLevelsOnChart { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Relevant Anchors On Chart", GroupName = "Anchors", Order = 25)]
         public bool ShowRelevantAnchorsOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 25)]
+        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 26)]
         public bool EnableManualAnchorHotkeys { get; set; }
 
         [Browsable(false)]
