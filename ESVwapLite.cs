@@ -367,10 +367,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 bool candidateLong = inferredLong;
 
-                if (EnableRetradeExcursionFilter && !string.IsNullOrEmpty(zoneId) && zoneNeedsExcursion.ContainsKey(zoneId) && zoneNeedsExcursion[zoneId])
+                // zone trade cap check (independent of excursion filter)
+                if (!string.IsNullOrEmpty(zoneId))
                 {
                     int zCount = zoneTradeCount.ContainsKey(zoneId) ? zoneTradeCount[zoneId] : 0;
-                    if (zCount >= MaxTradesPerZoneCycle)
+                    bool excursionBlocking = EnableRetradeExcursionFilter && zoneNeedsExcursion.ContainsKey(zoneId) && zoneNeedsExcursion[zoneId];
+
+                    if (zCount >= MaxTradesPerZoneCycle && excursionBlocking)
                     {
                         if (EnableLogs)
                             PrintWithContext("SETUP_BLOCKED reason=ZoneTradeCap zone=" + zoneId + " count=" + zCount + " anchor=" + avwap.ToString("F2"));
@@ -416,12 +419,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             string signal = usageKey + "-" + nextCount;
 
             // zone-level lock: any trade in overlap zone locks both directions until excursion
-            if (EnableRetradeExcursionFilter && !string.IsNullOrEmpty(zoneId))
+            if (!string.IsNullOrEmpty(zoneId))
             {
-                zoneLockPrice[zoneId] = anchorUsed;
-                zoneNeedsExcursion[zoneId] = true;
                 int zCount = zoneTradeCount.ContainsKey(zoneId) ? zoneTradeCount[zoneId] : 0;
                 zoneTradeCount[zoneId] = zCount + 1;
+
+                if (EnableRetradeExcursionFilter)
+                {
+                    zoneLockPrice[zoneId] = anchorUsed;
+                    zoneNeedsExcursion[zoneId] = true;
+                }
             }
 
             SetStopLoss(signal, CalculationMode.Ticks, stopTicks, false);
@@ -611,7 +618,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                     list.Add(new AnchorPoint { Kind = AnchorKind.PrevSessionLow, Price = prevSessionLow, BarIndex = sessionStartBarIndex, AnchorTime = sessionStartTime });
                 }
 
-                if (hasPreMarketLevels)
+                // pre-market levels only become tradable once RTH starts (08:30 CST) — before that they're still updating
+                int cmeTimeNow = GetCmeTimeInt(Time[0]);
+                if (hasPreMarketLevels && cmeTimeNow >= CmeRthStart)
                 {
                     list.Add(new AnchorPoint { Kind = AnchorKind.PreMarketHigh, Price = preMarketHigh, BarIndex = sessionStartBarIndex, AnchorTime = sessionStartTime });
                     list.Add(new AnchorPoint { Kind = AnchorKind.PreMarketLow, Price = preMarketLow, BarIndex = sessionStartBarIndex, AnchorTime = sessionStartTime });
@@ -652,11 +661,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Draw.Text(this, RelevantAnchorLabelTag, closest.Kind.ToString(), 0, closest.Price + (4 * TickSize), Brushes.DodgerBlue);
 
-            if (closest.BarIndex != relevantAnchorBarIndex && closest.BarIndex >= 0 && closest.AnchorTime > Core.Globals.MinDate)
+            // flat-level anchors (session levels) don't have meaningful AVWAPs — skip AVWAP2 rebuild for them
+            bool isFlatLevel = closest.Kind == AnchorKind.PrevSessionHigh || closest.Kind == AnchorKind.PrevSessionLow
+                            || closest.Kind == AnchorKind.PreMarketHigh  || closest.Kind == AnchorKind.PreMarketLow;
+
+            if (!isFlatLevel && closest.BarIndex != relevantAnchorBarIndex && closest.BarIndex >= 0 && closest.AnchorTime > Core.Globals.MinDate)
             {
                 HideRelevantAvwap(ref relevantAnchorAvwap2);
                 RebuildRelevantAvwap(ref relevantAnchorAvwap2, closest.AnchorTime);
                 relevantAnchorBarIndex = closest.BarIndex;
+            }
+            else if (isFlatLevel && relevantAnchorBarIndex >= 0)
+            {
+                HideRelevantAvwap(ref relevantAnchorAvwap2);
+                relevantAnchorBarIndex = -1;
             }
         }
 
