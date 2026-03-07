@@ -24,6 +24,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             WeeklyVWAP,
             HOD,
             LOD,
+            PrevSessionHigh,
+            PrevSessionLow,
+            PreMarketHigh,
+            PreMarketLow,
             ManualLong,
             ManualShort
         }
@@ -83,6 +87,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int dayHighBarIndex = -1;
         private int dayLowBarIndex = -1;
         private int dailyTrades;
+
+        // session levels
+        private bool hasPrevSessionLevels;
+        private double prevSessionHigh;
+        private double prevSessionLow;
+        private double preMarketHigh;
+        private double preMarketLow;
+        private bool hasPreMarketLevels;
         private Dictionary<AnchorKind, int> anchorCooldowns = new Dictionary<AnchorKind, int>();
         private Dictionary<string, int> anchorUsageCounts = new Dictionary<string, int>();
         private Dictionary<string, double> zoneLockPrice = new Dictionary<string, double>();
@@ -141,7 +153,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BreakEvenTriggerR = 1.5;
                 BreakEvenPlusTicks = 1;
                 EnableRetradeExcursionFilter = true;
-                RetradeExcursionAtrMultiple = 1.0;
+                RetradeExcursionAtrMultiple = 2.0;
                 MaxTradesPerZoneCycle = 2;
                 ConfirmBodyAtrMultiple = 0.2;
 
@@ -152,9 +164,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ExtremeEstablishAtrMultiple = 2.0;
 
                 EnableSessionVwapAnchor = true;
-                EnableWeeklyVwapAnchor = true;
-                EnableHodAnchor = true;
-                EnableLodAnchor = true;
+                EnableWeeklyVwapAnchor = false;
+                EnableHodAnchor = false;
+                EnableLodAnchor = false;
+                EnableSessionLevels = true;
                 ShowSessionVwapOnChart = true;
                 ShowWeeklyVwapOnChart = true;
                 ShowRelevantAnchorsOnChart = true;
@@ -590,6 +603,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                     list.Add(new AnchorPoint { Kind = AnchorKind.LOD, Price = l, BarIndex = dayLowBarIndex, AnchorTime = dayLowTime });
             }
 
+            if (EnableSessionLevels)
+            {
+                if (hasPrevSessionLevels)
+                {
+                    list.Add(new AnchorPoint { Kind = AnchorKind.PrevSessionHigh, Price = prevSessionHigh, BarIndex = sessionStartBarIndex, AnchorTime = sessionStartTime });
+                    list.Add(new AnchorPoint { Kind = AnchorKind.PrevSessionLow, Price = prevSessionLow, BarIndex = sessionStartBarIndex, AnchorTime = sessionStartTime });
+                }
+
+                if (hasPreMarketLevels)
+                {
+                    list.Add(new AnchorPoint { Kind = AnchorKind.PreMarketHigh, Price = preMarketHigh, BarIndex = sessionStartBarIndex, AnchorTime = sessionStartTime });
+                    list.Add(new AnchorPoint { Kind = AnchorKind.PreMarketLow, Price = preMarketLow, BarIndex = sessionStartBarIndex, AnchorTime = sessionStartTime });
+                }
+            }
+
             if (TryGetManualAnchorValue(true, out double mLong))
                 list.Add(new AnchorPoint { Kind = AnchorKind.ManualLong, Price = mLong, BarIndex = TimeToBarIndex(ManualLongAnchorFrom), AnchorTime = ManualLongAnchorFrom });
 
@@ -666,6 +694,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!Bars.IsFirstBarOfSession && sessionDate != Core.Globals.MinDate)
                 return;
 
+            // carry forward previous session levels before resetting
+            if (sessionDate != Core.Globals.MinDate)
+            {
+                hasPrevSessionLevels = true;
+                prevSessionHigh = dayHigh;
+                prevSessionLow = dayLow;
+            }
+
             sessionDate = GetCmeTime(Time[0]).Date;
             sessionStartBarIndex = CurrentBar;
             sessionStartTime = Time[0];
@@ -675,6 +711,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             dayHighTime = Time[0];
             dayLowBarIndex = CurrentBar;
             dayLowTime = Time[0];
+
+            // pre-market levels start from session start and freeze at 08:29:59 CST
+            preMarketHigh = High[0];
+            preMarketLow = Low[0];
+            hasPreMarketLevels = true;
             dailyTrades = 0;
             anchorCooldowns.Clear();
             anchorUsageCounts.Clear();
@@ -712,6 +753,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 dayLow = Low[0];
                 dayLowBarIndex = CurrentBar;
                 dayLowTime = Time[0];
+            }
+
+            // pre-market window: from session start to 08:29:59 CST
+            int cmeTime = GetCmeTimeInt(Time[0]);
+            if (hasPreMarketLevels && cmeTime <= 82959)
+            {
+                preMarketHigh = Math.Max(preMarketHigh, High[0]);
+                preMarketLow = Math.Min(preMarketLow, Low[0]);
             }
         }
 
@@ -1232,23 +1281,27 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool EnableLodAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Use Manual Anchors", GroupName = "Anchors", Order = 20)]
+        [Display(Name = "Enable Session Levels (Prev Session + Pre-Market)", GroupName = "Anchors", Order = 20)]
+        public bool EnableSessionLevels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Use Manual Anchors", GroupName = "Anchors", Order = 21)]
         public bool UseManualAnchors { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Session VWAP On Chart", GroupName = "Anchors", Order = 21)]
+        [Display(Name = "Show Session VWAP On Chart", GroupName = "Anchors", Order = 22)]
         public bool ShowSessionVwapOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Weekly VWAP On Chart", GroupName = "Anchors", Order = 22)]
+        [Display(Name = "Show Weekly VWAP On Chart", GroupName = "Anchors", Order = 23)]
         public bool ShowWeeklyVwapOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Relevant Anchors On Chart", GroupName = "Anchors", Order = 23)]
+        [Display(Name = "Show Relevant Anchors On Chart", GroupName = "Anchors", Order = 24)]
         public bool ShowRelevantAnchorsOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 24)]
+        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 25)]
         public bool EnableManualAnchorHotkeys { get; set; }
 
         [Browsable(false)]
