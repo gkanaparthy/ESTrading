@@ -506,8 +506,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // 1R in dollars: stopDist (pts) × (TickValue / TickSize)
             // ES: TickSize=0.25 pt, TickValue=$12.50 → point value $50
-            double rDollars = _tradeStopDist / TickSize
-                              * Instrument.MasterInstrument.TickValue;
+            // NT8 compatibility: use PointValue × points moved (not TickValue property)
+            double rDollars = _tradeStopDist
+                              * Instrument.MasterInstrument.PointValue;
             double resultR  = rDollars > 0 ? netPnl / rDollars : 0;
 
             bool lost = netPnl < 0;
