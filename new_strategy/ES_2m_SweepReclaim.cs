@@ -7,6 +7,7 @@ using System.Linq;
 using NinjaTrader.Cbi;
 using NinjaTrader.Data;
 using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.Indicators;
 #endregion
 
 // ============================================================
@@ -106,9 +107,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const int IDX_15M = 1;
 
         // Indicators
-        private NinjaTrader.Indicator.ATR  _atr2m;
-        private NinjaTrader.Indicator.EMA  _ema15m;
-        private NinjaTrader.Indicator.VWAP _vwap2m;
+        private ATR  _atr2m;
+        private EMA  _ema15m;
+
+        // Session VWAP (manual, avoids indicator dependency mismatch across NT8 installs)
+        private double _cumPv;
+        private double _cumVol;
+        private double _sessionVwap;
 
         // Swing state
         private double _swingLow;
@@ -202,9 +207,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Secondary 15-minute series — index 1
                 AddDataSeries(BarsPeriodType.Minute, 15);
 
-                // ATR and VWAP on primary (2m) series
+                // ATR on primary (2m) series
                 _atr2m  = ATR(AtrPeriod);
-                _vwap2m = VWAP();
 
                 BuildNewsCalendar();
             }
@@ -260,8 +264,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _biasReady = true;
 
             // ── Per-bar indicator reads ───────────────────────────────────
-            double atr  = _atr2m[0];
-            double vwap = _vwap2m[0];
+            double atr = _atr2m[0];
+
+            // Session VWAP update (typical price weighted by bar volume)
+            if (Bars.IsFirstBarOfSession)
+            {
+                _cumPv = 0;
+                _cumVol = 0;
+                _sessionVwap = Close[0];
+            }
+            double typ = (High[0] + Low[0] + Close[0]) / 3.0;
+            double vol = Math.Max(1.0, Volume[0]);
+            _cumPv += typ * vol;
+            _cumVol += vol;
+            double vwap = _cumVol > 0 ? (_cumPv / _cumVol) : Close[0];
+            _sessionVwap = vwap;
 
             // ── Supporting calculations ───────────────────────────────────
             TrackVwapCross(Close[0], vwap, tod.TotalMinutes);
@@ -626,6 +643,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             _inTrade     = false;
             _vwapCrossMins.Clear();
             _vwapInit    = false;
+            _cumPv       = 0;
+            _cumVol      = 0;
+            _sessionVwap = 0;
             _sessionDate = ct.Date;
         }
 
@@ -634,31 +654,29 @@ namespace NinjaTrader.NinjaScript.Strategies
         // ─────────────────────────────────────────────────────────────────────
         private void BuildNewsCalendar()
         {
-            // (year, month, day, ctHour, ctMinute)
-            var evts = new (int y, int mo, int d, int h, int m)[]
+            var eventsCt = new DateTime[]
             {
-                (2026,  2,  4,  7, 30),   // ISM Services
-                (2026,  2,  5,  7, 30),   // Jobless Claims
-                (2026,  2,  7,  7, 30),   // NFP Jan
-                (2026,  2, 10, 14,  0),   // Fed speak (approx)
-                (2026,  2, 12,  7, 30),   // CPI Jan
-                (2026,  2, 13,  7, 30),   // Jobless Claims
-                (2026,  2, 14,  7, 30),   // PPI / Retail Sales
-                (2026,  2, 19,  7, 30),   // PPI
-                (2026,  2, 20,  7, 30),   // Jobless Claims
-                (2026,  2, 25, 13,  0),   // CB Consumer Confidence
-                (2026,  2, 26,  7, 30),   // PCE / Core PCE
-                (2026,  2, 27,  7, 30),   // GDP / Jobless Claims
-                (2026,  3,  4, 14,  0),   // ISM Manufacturing
-                (2026,  3,  5,  9,  0),   // JOLTS
-                (2026,  3,  6,  7, 15),   // ADP Employment
-                (2026,  3,  7,  7, 30),   // NFP Feb
+                new DateTime(2026, 2,  4,  7, 30, 0), // ISM Services
+                new DateTime(2026, 2,  5,  7, 30, 0), // Jobless Claims
+                new DateTime(2026, 2,  7,  7, 30, 0), // NFP Jan
+                new DateTime(2026, 2, 10, 14,  0, 0), // Fed speak (approx)
+                new DateTime(2026, 2, 12,  7, 30, 0), // CPI Jan
+                new DateTime(2026, 2, 13,  7, 30, 0), // Jobless Claims
+                new DateTime(2026, 2, 14,  7, 30, 0), // PPI / Retail Sales
+                new DateTime(2026, 2, 19,  7, 30, 0), // PPI
+                new DateTime(2026, 2, 20,  7, 30, 0), // Jobless Claims
+                new DateTime(2026, 2, 25, 13,  0, 0), // CB Consumer Confidence
+                new DateTime(2026, 2, 26,  7, 30, 0), // PCE / Core PCE
+                new DateTime(2026, 2, 27,  7, 30, 0), // GDP / Jobless Claims
+                new DateTime(2026, 3,  4, 14,  0, 0), // ISM Manufacturing
+                new DateTime(2026, 3,  5,  9,  0, 0), // JOLTS
+                new DateTime(2026, 3,  6,  7, 15, 0), // ADP Employment
+                new DateTime(2026, 3,  7,  7, 30, 0), // NFP Feb
             };
 
-            foreach (var e in evts)
+            foreach (var dt in eventsCt)
             {
-                var dt  = new DateTime(e.y, e.mo, e.d, e.h, e.m, 0);
-                long key= (long)dt.DayOfYear * 10000 + e.h * 60 + e.m;
+                long key = (long)dt.DayOfYear * 10000 + dt.Hour * 60 + dt.Minute;
                 _newsKeys.Add(key);
             }
         }
