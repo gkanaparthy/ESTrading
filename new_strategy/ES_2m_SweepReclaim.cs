@@ -37,8 +37,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         public double EmaSlopeThreshold { get; set; }
 
         [NinjaScriptProperty]
+        [Range(5, 50)]
+        [Display(Name = "ADX Period (15m)", GroupName = "Regime", Order = 2)]
+        public int AdxPeriod { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 60)]
+        [Display(Name = "ADX Min (15m)", GroupName = "Regime", Order = 3)]
+        public double AdxMin { get; set; }
+
+        [NinjaScriptProperty]
         [Range(1, 10)]
-        [Display(Name = "Max VWAP Crosses (30 min whipsaw)", GroupName = "Regime", Order = 2)]
+        [Display(Name = "Max VWAP Crosses (30 min whipsaw)", GroupName = "Regime", Order = 4)]
         public int MaxVwapCrossesWhipsaw { get; set; }
 
         [NinjaScriptProperty]
@@ -60,6 +70,21 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(1, 10)]
         [Display(Name = "Setup Expiry (bars after reclaim)", GroupName = "Entry", Order = 1)]
         public int SetupExpiryBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 12)]
+        [Display(Name = "Min Reclaim Beyond Level (ticks)", GroupName = "Entry", Order = 2)]
+        public int MinReclaimBeyondLevelTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.2, 5.0)]
+        [Display(Name = "Max Entry Distance From VWAP (ATR)", GroupName = "Entry", Order = 3)]
+        public double MaxEntryVwapDistanceAtr { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 10)]
+        [Display(Name = "Min Setup Score", GroupName = "Entry", Order = 4)]
+        public int MinSetupScore { get; set; }
 
         [NinjaScriptProperty]
         [Range(5, 50)]
@@ -109,6 +134,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Indicators
         private ATR  _atr2m;
         private EMA  _ema15m;
+        private ADX  _adx15m;
 
         // Session VWAP (manual, avoids indicator dependency mismatch across NT8 installs)
         private double _cumPv;
@@ -189,11 +215,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Spec v2 defaults
                 EmaPeriod              = 20;
                 EmaSlopeThreshold      = 0.5;
+                AdxPeriod              = 14;
+                AdxMin                 = 18;
                 MaxVwapCrossesWhipsaw  = 3;
                 SwingFractalBars       = 5;
                 MaxSwingAgeBars        = 20;
                 ReclaimBodyAtrFraction = 0.25;
                 SetupExpiryBars        = 3;
+                MinReclaimBeyondLevelTicks = 1;
+                MaxEntryVwapDistanceAtr    = 2.0;
+                MinSetupScore              = 5;
                 AtrPeriod              = 14;
                 StopMinAtrMult         = 0.5;
                 StopMaxAtrMult         = 1.5;
@@ -214,8 +245,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else if (State == State.DataLoaded)
             {
-                // EMA must reference the 15m bar array
+                // 15m regime indicators
                 _ema15m = EMA(BarsArray[IDX_15M], EmaPeriod);
+                _adx15m = ADX(BarsArray[IDX_15M], AdxPeriod);
 
                 // Initialise state (use epoch date as "no session yet")
                 InitDayState(new DateTime(2000, 1, 1));
@@ -365,6 +397,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 // Must close back ABOVE swing low
                 if (Close[0] <= _swingLow) return;
+                if (Close[0] < _swingLow + MinReclaimBeyondLevelTicks * TickSize)
+                {
+                    Reject($"RECLAIM_SHALLOW close={Close[0]:F2} need>={(_swingLow + MinReclaimBeyondLevelTicks * TickSize):F2}");
+                    _state = SetupState.Idle; return;
+                }
 
                 double body      = Math.Abs(Close[0] - Open[0]);
                 double range     = High[0] - Low[0];
@@ -394,11 +431,45 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 double targetPx = entryPx + RewardRiskRatio * stopDist;
 
+                // Target-feasibility + location filter + setup scoring
+                if (!double.IsNaN(_swingHigh) && _swingHigh > entryPx)
+                {
+                    double roomToObstacle = _swingHigh - entryPx;
+                    double roomNeeded = targetPx - entryPx;
+                    if (roomToObstacle < roomNeeded)
+                    {
+                        Reject($"TARGET_BLOCKED room={roomToObstacle/TickSize:F1} need={roomNeeded/TickSize:F1}");
+                        _state = SetupState.Idle; return;
+                    }
+                }
+
+                if (Math.Abs(entryPx - _sessionVwap) > MaxEntryVwapDistanceAtr * atr)
+                {
+                    Reject($"VWAP_DIST entryVwap={(Math.Abs(entryPx - _sessionVwap)/TickSize):F1}t");
+                    _state = SetupState.Idle; return;
+                }
+
+                int score = 0;
+                if (body >= 0.35 * atr) score += 2; else score += 1;
+                if (closeRank >= 0.75) score += 2; else score += 1;
+                if (Math.Abs(entryPx - _sessionVwap) <= 1.0 * atr) score += 1;
+                if (!double.IsNaN(_swingHigh) && _swingHigh - entryPx >= (targetPx - entryPx)) score += 2;
+                if (score < MinSetupScore)
+                {
+                    Reject($"LOW_SCORE score={score} min={MinSetupScore}");
+                    _state = SetupState.Idle; return;
+                }
+
                 ArmLong(entryPx, stopPx, targetPx, stopDist);
             }
             else if (_state == SetupState.SweptShort)
             {
                 if (Close[0] >= _swingHigh) return;
+                if (Close[0] > _swingHigh - MinReclaimBeyondLevelTicks * TickSize)
+                {
+                    Reject($"RECLAIM_SHALLOW close={Close[0]:F2} need<={(_swingHigh - MinReclaimBeyondLevelTicks * TickSize):F2}");
+                    _state = SetupState.Idle; return;
+                }
 
                 double body      = Math.Abs(Close[0] - Open[0]);
                 double range     = High[0] - Low[0];
@@ -426,6 +497,35 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!CheckStopBounds(stopDist, atr)) { _state = SetupState.Idle; return; }
 
                 double targetPx = entryPx - RewardRiskRatio * stopDist;
+
+                // Target-feasibility + location filter + setup scoring
+                if (!double.IsNaN(_swingLow) && _swingLow < entryPx)
+                {
+                    double roomToObstacle = entryPx - _swingLow;
+                    double roomNeeded = entryPx - targetPx;
+                    if (roomToObstacle < roomNeeded)
+                    {
+                        Reject($"TARGET_BLOCKED room={roomToObstacle/TickSize:F1} need={roomNeeded/TickSize:F1}");
+                        _state = SetupState.Idle; return;
+                    }
+                }
+
+                if (Math.Abs(entryPx - _sessionVwap) > MaxEntryVwapDistanceAtr * atr)
+                {
+                    Reject($"VWAP_DIST entryVwap={(Math.Abs(entryPx - _sessionVwap)/TickSize):F1}t");
+                    _state = SetupState.Idle; return;
+                }
+
+                int score = 0;
+                if (body >= 0.35 * atr) score += 2; else score += 1;
+                if (closeRank >= 0.75) score += 2; else score += 1;
+                if (Math.Abs(entryPx - _sessionVwap) <= 1.0 * atr) score += 1;
+                if (!double.IsNaN(_swingLow) && entryPx - _swingLow >= (entryPx - targetPx)) score += 2;
+                if (score < MinSetupScore)
+                {
+                    Reject($"LOW_SCORE score={score} min={MinSetupScore}");
+                    _state = SetupState.Idle; return;
+                }
 
                 ArmShort(entryPx, stopPx, targetPx, stopDist);
             }
@@ -568,6 +668,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             { _bias = Bias.None; return; }
 
             double slope = _ema15m[0] - _ema15m[3];   // 3-bar ROC on 15m EMA
+            double adx15 = _adx15m[0];
 
             // Whipsaw filter: count crosses in last 30 minutes
             double nowMins = tod.TotalMinutes;
@@ -575,6 +676,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (crosses >= MaxVwapCrossesWhipsaw)
             { Reject($"WHIPSAW crosses={crosses}"); _bias = Bias.None; return; }
+
+            if (adx15 < AdxMin)
+            { Reject($"ADX_LOW adx={adx15:F1} min={AdxMin:F1}"); _bias = Bias.None; return; }
 
             if (price > vwap && slope > EmaSlopeThreshold)
                 _bias = Bias.Long;
