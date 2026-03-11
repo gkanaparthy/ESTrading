@@ -147,14 +147,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AtrPeriod = 14;
                 UseExtendedHours = false;
                 MaxTradesPerDay = 1000;
-                SignalCooldownBars = 2;
+                SignalCooldownBars = 5;
                 MinAtrForEntry = 0.8;
                 MaxAtrForEntry = 10.0;
 
                 // risk: recent peak/trough distance, capped/floored
                 StopSwingLookbackBars = 8;
                 MinStopTicks = 8;
-                MaxStopPoints = 5.0;
+                MaxStopPoints = 10.0;
                 RiskRewardMultiple = 3.0;
                 MaxRiskPerTradeDollars = 400.0;
                 EnableBreakEven = true;
@@ -544,12 +544,19 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int ComputeSwingStopTicks(bool isLong)
         {
             int lookback = Math.Min(Math.Max(1, StopSwingLookbackBars), CurrentBar);
-            double swing = isLong ? Low[0] : High[0];
 
+            // Find real swing low/high over lookback window — this is the actual stop level
+            double swing = isLong ? Low[0] : High[0];
             for (int i = 1; i <= lookback; i++)
                 swing = isLong ? Math.Min(swing, Low[i]) : Math.Max(swing, High[i]);
 
-            double distPoints = isLong ? (Close[0] - swing) : (swing - Close[0]);
+            // Stop is placed 1 tick beyond the real swing extreme
+            double stopLevel = isLong ? swing - TickSize : swing + TickSize;
+
+            // Distance from current close to stop level
+            double distPoints = isLong ? (Close[0] - stopLevel) : (stopLevel - Close[0]);
+
+            // Apply MaxStopPoints cap as a safety guard (configurable, default 10 pts for sim)
             distPoints = Math.Max(TickSize, Math.Min(MaxStopPoints, distPoints));
             return Math.Max(MinStopTicks, (int)Math.Ceiling(distPoints / TickSize));
         }
