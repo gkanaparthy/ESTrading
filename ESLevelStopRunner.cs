@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Xml.Serialization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -380,10 +381,23 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (inCooldown || tradeCapHit || !atrOk)
                 return;
 
-            // touch arms one latched setup and keeps it fixed until confirm/timeout
+            // touch on the four session levels triggers immediate fade setup
             if (touch && !setupActive)
             {
-                bool candidateLong = inferredLong;
+                bool candidateLong;
+                switch (selected.Kind)
+                {
+                    case AnchorKind.PrevSessionLow:
+                    case AnchorKind.PreMarketLow:
+                        candidateLong = true;
+                        break;
+                    case AnchorKind.PrevSessionHigh:
+                    case AnchorKind.PreMarketHigh:
+                        candidateLong = false;
+                        break;
+                    default:
+                        return;
+                }
 
                 // zone trade cap check (independent of excursion filter)
                 if (!string.IsNullOrEmpty(zoneId))
@@ -453,11 +467,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             activeRiskTicks = stopTicks;
             breakEvenMoved = false;
 
-            double triggerPrice = isLong ? anchorUsed + TickSize : anchorUsed - TickSize;
             if (isLong)
-                EnterLongStopMarket(quantity, triggerPrice, signal);
+                EnterLong(quantity, signal);
             else
-                EnterShortStopMarket(quantity, triggerPrice, signal);
+                EnterShort(quantity, signal);
 
             dailyTrades++;
             anchorCooldowns[anchorKind] = SignalCooldownBars;
@@ -1241,26 +1254,28 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Range(5, 50)]
-        [Display(Name = "ATR Period", GroupName = "Indicators", Order = 1)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int AtrPeriod { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.1, 10.0)]
-        [Display(Name = "Min ATR For Entry", GroupName = "Regime", Order = 2)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double MinAtrForEntry { get; set; }
 
         [NinjaScriptProperty]
         [Range(1.0, 40.0)]
-        [Display(Name = "Max ATR For Entry", GroupName = "Regime", Order = 3)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double MaxAtrForEntry { get; set; }
 
-        [NinjaScriptProperty]
-        [Display(Name = "Use Extended Hours", GroupName = "Session", Order = 4)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool UseExtendedHours { get; set; }
 
-        [NinjaScriptProperty]
-        [Range(1, 1000)]
-        [Display(Name = "Max Trades Per Day", GroupName = "Risk", Order = 5)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int MaxTradesPerDay { get; set; }
 
         [NinjaScriptProperty]
@@ -1280,139 +1295,173 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Range(0, 20)]
-        [Display(Name = "Signal Cooldown Bars", GroupName = "Entry", Order = 6)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int SignalCooldownBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Stop Swing Lookback Bars", GroupName = "Risk", Order = 7)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int StopSwingLookbackBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 100)]
-        [Display(Name = "Min Stop Ticks", GroupName = "Risk", Order = 8)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int MinStopTicks { get; set; }
 
         [NinjaScriptProperty]
         [Range(1.0, 10.0)]
-        [Display(Name = "Max Stop Points", GroupName = "Risk", Order = 9)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double MaxStopPoints { get; set; }
 
         [NinjaScriptProperty]
         [Range(1.0, 4.0)]
-        [Display(Name = "Risk Reward Multiple", GroupName = "Risk", Order = 10)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double RiskRewardMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Range(50.0, 5000.0)]
-        [Display(Name = "Max Risk Per Trade ($)", GroupName = "Risk", Order = 11)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double MaxRiskPerTradeDollars { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Break Even", GroupName = "Risk", Order = 12)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableBreakEven { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.5, 3.0)]
-        [Display(Name = "Break Even Trigger (R)", GroupName = "Risk", Order = 13)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double BreakEvenTriggerR { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 10)]
-        [Display(Name = "Break Even Plus Ticks", GroupName = "Risk", Order = 14)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int BreakEvenPlusTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Re-trade Excursion Filter", GroupName = "Risk", Order = 15)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableRetradeExcursionFilter { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.5, 3.0)]
-        [Display(Name = "Re-trade Excursion ATR Multiple", GroupName = "Risk", Order = 16)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double RetradeExcursionAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 10)]
-        [Display(Name = "Max Trades Per Zone Cycle", GroupName = "Risk", Order = 17)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int MaxTradesPerZoneCycle { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.05, 1.0)]
-        [Display(Name = "Confirm Body ATR Multiple", GroupName = "Risk", Order = 18)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double ConfirmBodyAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Touch Tolerance Ticks", GroupName = "Anchors", Order = 12)]
+        [NinjaScriptProperty]
+        [Range(0, 8)]
+        [Display(Name = "Touch Tolerance Ticks", GroupName = "Entry", Order = 4)]
         public int TouchToleranceTicks { get; set; }
 
         [NinjaScriptProperty]
         [Range(2, 20)]
-        [Display(Name = "Recent Bar Lookback", GroupName = "Anchors", Order = 13)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int RecentBarLookback { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Setup Max Bars", GroupName = "Anchors", Order = 14)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int SetupMaxBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.5, 5.0)]
-        [Display(Name = "Extreme Establish ATR Multiple", GroupName = "Anchors", Order = 15)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double ExtremeEstablishAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Session VWAP Anchor", GroupName = "Anchors", Order = 16)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableSessionVwapAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Weekly VWAP Anchor", GroupName = "Anchors", Order = 17)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableWeeklyVwapAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable HOD Anchor", GroupName = "Anchors", Order = 18)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableHodAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable LOD Anchor", GroupName = "Anchors", Order = 19)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableLodAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Session Levels (Prev Session + Pre-Market)", GroupName = "Anchors", Order = 20)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableSessionLevels { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Use Manual Anchors", GroupName = "Anchors", Order = 21)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool UseManualAnchors { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Session VWAP On Chart", GroupName = "Anchors", Order = 22)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool ShowSessionVwapOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Weekly VWAP On Chart", GroupName = "Anchors", Order = 23)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool ShowWeeklyVwapOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Session Levels On Chart", GroupName = "Anchors", Order = 24)]
+        [NinjaScriptProperty]
+        [Display(Name = "Show Session Levels On Chart", GroupName = "Display", Order = 5)]
         public bool ShowSessionLevelsOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Relevant Anchors On Chart", GroupName = "Anchors", Order = 25)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool ShowRelevantAnchorsOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 26)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableManualAnchorHotkeys { get; set; }
 
         [Browsable(false)]
+        [Browsable(false)]
+        [XmlIgnore]
         public DateTime ManualLongAnchorFrom { get; set; }
 
         [Browsable(false)]
+        [Browsable(false)]
+        [XmlIgnore]
         public DateTime ManualShortAnchorFrom { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 23)]
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 99)]
         public bool EnableLogs { get; set; }
 
         #endregion
