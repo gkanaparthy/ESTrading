@@ -121,6 +121,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private string activeSignalName;
         private int activeRiskTicks;
         private bool breakEvenMoved;
+        private int activeEntryBar = -1;
+        private double activeStopPrice = double.NaN;
 
         protected override void OnStateChange()
         {
@@ -161,6 +163,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnableBreakEven = true;
                 BreakEvenTriggerR = 1.5;
                 BreakEvenPlusTicks = 1;
+                EnableTimeStop = true;
+                TimeStopBars = 8;
+                TimeStopMinR = 0.5;
+                EnableSwingCloseTrailing = true;
+                SwingCloseTrailLookbackBars = 3;
+                SwingCloseTrailBufferTicks = 1;
+                SwingCloseTrailStartR = 1.0;
                 EnableRetradeExcursionFilter = true;
                 RetradeExcursionAtrMultiple = 2.0;
                 MaxTradesPerZoneCycle = 2;
@@ -230,6 +239,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             activeSignalName = null;
             activeRiskTicks = 0;
             breakEvenMoved = false;
+            activeEntryBar = -1;
+            activeStopPrice = double.NaN;
 
             if (anchors.Count == 0)
                 return;
@@ -453,6 +464,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             activeSignalName = signal;
             activeRiskTicks = stopTicks;
             breakEvenMoved = false;
+            activeEntryBar = CurrentBar;
+            activeStopPrice = double.NaN;
 
             if (isLong)
                 EnterLong(quantity, signal);
@@ -477,35 +490,95 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void ManageBreakEven()
         {
-            if (!EnableBreakEven || breakEvenMoved || activeRiskTicks <= 0 || string.IsNullOrEmpty(activeSignalName))
+            if (activeRiskTicks <= 0 || string.IsNullOrEmpty(activeSignalName))
                 return;
 
             if (Position.MarketPosition == MarketPosition.Flat)
                 return;
 
             double avg = Position.AveragePrice;
-            double triggerMove = BreakEvenTriggerR * activeRiskTicks * TickSize;
+            double riskPoints = activeRiskTicks * TickSize;
+            double pnlPoints = Position.MarketPosition == MarketPosition.Long ? (Close[0] - avg) : (avg - Close[0]);
+            double pnlR = riskPoints > 0 ? pnlPoints / riskPoints : 0;
 
-            if (Position.MarketPosition == MarketPosition.Long)
+            // 1) Time stop: exit if trade fails to progress enough within N bars
+            if (EnableTimeStop && activeEntryBar >= 0)
             {
-                if (Close[0] >= avg + triggerMove)
+                int barsInTrade = CurrentBar - activeEntryBar;
+                if (barsInTrade >= TimeStopBars && pnlR < TimeStopMinR)
+                {
+                    if (Position.MarketPosition == MarketPosition.Long)
+                        ExitLong("TimeStopExit", activeSignalName);
+                    else if (Position.MarketPosition == MarketPosition.Short)
+                        ExitShort("TimeStopExit", activeSignalName);
+
+                    if (EnableLogs)
+                        PrintWithContext("TIME_STOP_EXIT signal=" + activeSignalName + " bars=" + barsInTrade + " pnlR=" + pnlR.ToString("F2"));
+                    return;
+                }
+            }
+
+            // 2) Break-even move
+            if (EnableBreakEven && !breakEvenMoved)
+            {
+                double triggerMove = BreakEvenTriggerR * riskPoints;
+
+                if (Position.MarketPosition == MarketPosition.Long && Close[0] >= avg + triggerMove)
                 {
                     double bePrice = Instrument.MasterInstrument.RoundToTickSize(avg + (BreakEvenPlusTicks * TickSize));
                     SetStopLoss(activeSignalName, CalculationMode.Price, bePrice, false);
+                    activeStopPrice = double.IsNaN(activeStopPrice) ? bePrice : Math.Max(activeStopPrice, bePrice);
                     breakEvenMoved = true;
                     if (EnableLogs)
                         PrintWithContext("BREAK_EVEN_MOVED side=LONG signal=" + activeSignalName + " stop=" + bePrice.ToString("F2"));
                 }
-            }
-            else if (Position.MarketPosition == MarketPosition.Short)
-            {
-                if (Close[0] <= avg - triggerMove)
+                else if (Position.MarketPosition == MarketPosition.Short && Close[0] <= avg - triggerMove)
                 {
                     double bePrice = Instrument.MasterInstrument.RoundToTickSize(avg - (BreakEvenPlusTicks * TickSize));
                     SetStopLoss(activeSignalName, CalculationMode.Price, bePrice, false);
+                    activeStopPrice = double.IsNaN(activeStopPrice) ? bePrice : Math.Min(activeStopPrice, bePrice);
                     breakEvenMoved = true;
                     if (EnableLogs)
                         PrintWithContext("BREAK_EVEN_MOVED side=SHORT signal=" + activeSignalName + " stop=" + bePrice.ToString("F2"));
+                }
+            }
+
+            // 3) Swing-close trailing after trade is sufficiently in profit
+            if (!EnableSwingCloseTrailing || pnlR < SwingCloseTrailStartR)
+                return;
+
+            int lb = Math.Min(Math.Max(1, SwingCloseTrailLookbackBars), CurrentBar);
+            int bufTicks = Math.Max(1, SwingCloseTrailBufferTicks);
+            double buffer = bufTicks * TickSize;
+
+            if (Position.MarketPosition == MarketPosition.Long)
+            {
+                double trailBase = Close[0];
+                for (int i = 1; i <= lb; i++)
+                    trailBase = Math.Min(trailBase, Close[i]);
+
+                double newStop = Instrument.MasterInstrument.RoundToTickSize(trailBase - buffer);
+                if (double.IsNaN(activeStopPrice) || newStop > activeStopPrice)
+                {
+                    SetStopLoss(activeSignalName, CalculationMode.Price, newStop, false);
+                    activeStopPrice = newStop;
+                    if (EnableLogs)
+                        PrintWithContext("TRAIL_STOP_MOVED side=LONG signal=" + activeSignalName + " stop=" + newStop.ToString("F2"));
+                }
+            }
+            else if (Position.MarketPosition == MarketPosition.Short)
+            {
+                double trailBase = Close[0];
+                for (int i = 1; i <= lb; i++)
+                    trailBase = Math.Max(trailBase, Close[i]);
+
+                double newStop = Instrument.MasterInstrument.RoundToTickSize(trailBase + buffer);
+                if (double.IsNaN(activeStopPrice) || newStop < activeStopPrice)
+                {
+                    SetStopLoss(activeSignalName, CalculationMode.Price, newStop, false);
+                    activeStopPrice = newStop;
+                    if (EnableLogs)
+                        PrintWithContext("TRAIL_STOP_MOVED side=SHORT signal=" + activeSignalName + " stop=" + newStop.ToString("F2"));
                 }
             }
         }
@@ -1331,22 +1404,55 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int BreakEvenPlusTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Re-trade Excursion Filter", GroupName = "Risk", Order = 16)]
+        [Display(Name = "Enable Time Stop", GroupName = "Risk", Order = 16)]
+        public bool EnableTimeStop { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 50)]
+        [Display(Name = "Time Stop Bars", GroupName = "Risk", Order = 17)]
+        public int TimeStopBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 2.0)]
+        [Display(Name = "Time Stop Min R", GroupName = "Risk", Order = 18)]
+        public double TimeStopMinR { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Swing-Close Trailing", GroupName = "Risk", Order = 19)]
+        public bool EnableSwingCloseTrailing { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Swing-Close Trail Lookback Bars", GroupName = "Risk", Order = 20)]
+        public int SwingCloseTrailLookbackBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "Swing-Close Trail Buffer Ticks", GroupName = "Risk", Order = 21)]
+        public int SwingCloseTrailBufferTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.5, 5.0)]
+        [Display(Name = "Swing-Close Trail Start R", GroupName = "Risk", Order = 22)]
+        public double SwingCloseTrailStartR { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Re-trade Excursion Filter", GroupName = "Risk", Order = 23)]
         public bool EnableRetradeExcursionFilter { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.5, 3.0)]
-        [Display(Name = "Re-trade Excursion ATR Multiple", GroupName = "Risk", Order = 17)]
+        [Display(Name = "Re-trade Excursion ATR Multiple", GroupName = "Risk", Order = 24)]
         public double RetradeExcursionAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 10)]
-        [Display(Name = "Max Trades Per Zone Cycle", GroupName = "Risk", Order = 18)]
+        [Display(Name = "Max Trades Per Zone Cycle", GroupName = "Risk", Order = 25)]
         public int MaxTradesPerZoneCycle { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.05, 1.0)]
-        [Display(Name = "Confirm Body ATR Multiple", GroupName = "Risk", Order = 19)]
+        [Display(Name = "Confirm Body ATR Multiple", GroupName = "Risk", Order = 26)]
         public double ConfirmBodyAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
