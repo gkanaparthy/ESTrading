@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Windows.Media;
 using NinjaTrader.Cbi;
 using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.DrawingTools;
 using NinjaTrader.NinjaScript.Indicators;
 
 namespace NinjaTrader.NinjaScript.Strategies
@@ -12,6 +14,15 @@ namespace NinjaTrader.NinjaScript.Strategies
     {
         private const int RthStart = 83000;
         private const int RthEnd = 150000;
+
+        private const string PrevSessionHighLineTag = "ESLevelFadeV0.Level.PrevSessionHigh.Line";
+        private const string PrevSessionLowLineTag = "ESLevelFadeV0.Level.PrevSessionLow.Line";
+        private const string PreMarketHighLineTag = "ESLevelFadeV0.Level.PreMarketHigh.Line";
+        private const string PreMarketLowLineTag = "ESLevelFadeV0.Level.PreMarketLow.Line";
+        private const string PrevSessionHighLabelTag = "ESLevelFadeV0.Level.PrevSessionHigh.Label";
+        private const string PrevSessionLowLabelTag = "ESLevelFadeV0.Level.PrevSessionLow.Label";
+        private const string PreMarketHighLabelTag = "ESLevelFadeV0.Level.PreMarketHigh.Label";
+        private const string PreMarketLowLabelTag = "ESLevelFadeV0.Level.PreMarketLow.Label";
 
         private ATR atr;
 
@@ -56,6 +67,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TargetTicks = 18;
                 MaxTradesPerLevelPerSession = 1;
                 ClusterDistanceTicks = 18;
+                ShowSessionLevelsOnChart = true;
                 EnableLogs = true;
             }
             else if (State == State.Configure)
@@ -90,6 +102,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 preMarketHigh = Math.Max(preMarketHigh, High[0]);
                 preMarketLow = Math.Min(preMarketLow, Low[0]);
             }
+
+            UpdateLevelOverlays();
 
             // only RTH trading
             if (t < RthStart || t > RthEnd)
@@ -299,6 +313,52 @@ namespace NinjaTrader.NinjaScript.Strategies
             return false;
         }
 
+        private void UpdateLevelOverlays()
+        {
+            if (ChartControl == null || !ShowSessionLevelsOnChart)
+            {
+                RemoveLevelOverlays();
+                return;
+            }
+
+            var prevHighBrush = new SolidColorBrush(Color.FromArgb(235, 0, 120, 255));   // electric blue
+            var prevLowBrush = new SolidColorBrush(Color.FromArgb(235, 0, 210, 140));    // vivid green
+            var preHighBrush = new SolidColorBrush(Color.FromArgb(235, 255, 165, 0));    // bright orange
+            var preLowBrush = new SolidColorBrush(Color.FromArgb(235, 190, 90, 255));    // neon purple
+
+            if (hasPrevSession)
+            {
+                Draw.HorizontalLine(this, PrevSessionHighLineTag, prevSessionHigh, prevHighBrush);
+                Draw.HorizontalLine(this, PrevSessionLowLineTag, prevSessionLow, prevLowBrush);
+                Draw.Text(this, PrevSessionHighLabelTag, "Prev High", 0, prevSessionHigh + (2 * TickSize), prevHighBrush);
+                Draw.Text(this, PrevSessionLowLabelTag, "Prev Low", 0, prevSessionLow - (2 * TickSize), prevLowBrush);
+            }
+            else
+            {
+                RemoveDrawObject(PrevSessionHighLineTag);
+                RemoveDrawObject(PrevSessionLowLineTag);
+                RemoveDrawObject(PrevSessionHighLabelTag);
+                RemoveDrawObject(PrevSessionLowLabelTag);
+            }
+
+            Draw.HorizontalLine(this, PreMarketHighLineTag, preMarketHigh, preHighBrush);
+            Draw.HorizontalLine(this, PreMarketLowLineTag, preMarketLow, preLowBrush);
+            Draw.Text(this, PreMarketHighLabelTag, "PM High", 0, preMarketHigh + (2 * TickSize), preHighBrush);
+            Draw.Text(this, PreMarketLowLabelTag, "PM Low", 0, preMarketLow - (2 * TickSize), preLowBrush);
+        }
+
+        private void RemoveLevelOverlays()
+        {
+            RemoveDrawObject(PrevSessionHighLineTag);
+            RemoveDrawObject(PrevSessionLowLineTag);
+            RemoveDrawObject(PreMarketHighLineTag);
+            RemoveDrawObject(PreMarketLowLineTag);
+            RemoveDrawObject(PrevSessionHighLabelTag);
+            RemoveDrawObject(PrevSessionLowLabelTag);
+            RemoveDrawObject(PreMarketHighLabelTag);
+            RemoveDrawObject(PreMarketLowLabelTag);
+        }
+
         private void UpdateExcursionUnlocks(double atrVal)
         {
             if (atrVal <= 0)
@@ -417,6 +477,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(1, 200)]
         [Display(Name = "Cluster Distance Ticks", GroupName = "Parameters", Order = 7)]
         public int ClusterDistanceTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Session Levels On Chart", GroupName = "Visual", Order = 8)]
+        public bool ShowSessionLevelsOnChart { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 99)]
