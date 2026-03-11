@@ -369,6 +369,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     cd, dailyTrades, atrOk ? 1 : 0));
             }
 
+            // RTH gate: honour UseExtendedHours parameter
+            int cmeTimeNowForWindow = GetCmeTimeInt(Time[0]);
+            if (!IsInTradeWindow(cmeTimeNowForWindow))
+                return;
+
             if (inCooldown || tradeCapHit || !atrOk)
                 return;
 
