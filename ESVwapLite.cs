@@ -157,6 +157,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MaxStopPoints = 10.0;
                 RiskRewardMultiple = 3.0;
                 MaxRiskPerTradeDollars = 400.0;
+                SwingCloseStopBufferTicks = 1;
                 EnableBreakEven = true;
                 BreakEvenTriggerR = 1.5;
                 BreakEvenPlusTicks = 1;
@@ -545,18 +546,21 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             int lookback = Math.Min(Math.Max(1, StopSwingLookbackBars), CurrentBar);
 
-            // Find real swing low/high over lookback window — this is the actual stop level
-            double swing = isLong ? Low[0] : High[0];
+            // Use close-based swing extremes (not wick highs/lows)
+            double swingClose = Close[0];
             for (int i = 1; i <= lookback; i++)
-                swing = isLong ? Math.Min(swing, Low[i]) : Math.Max(swing, High[i]);
+                swingClose = isLong ? Math.Min(swingClose, Close[i]) : Math.Max(swingClose, Close[i]);
 
-            // Stop is placed 1 tick beyond the real swing extreme
-            double stopLevel = isLong ? swing - TickSize : swing + TickSize;
+            int bufferTicks = Math.Max(1, Math.Min(2, SwingCloseStopBufferTicks));
+            double buffer = bufferTicks * TickSize;
+
+            // Short: SL above swing-high close. Long: mirror below swing-low close.
+            double stopLevel = isLong ? swingClose - buffer : swingClose + buffer;
 
             // Distance from current close to stop level
             double distPoints = isLong ? (Close[0] - stopLevel) : (stopLevel - Close[0]);
 
-            // Apply MaxStopPoints cap as a safety guard (configurable, default 10 pts for sim)
+            // Apply MaxStopPoints cap as a safety guard
             distPoints = Math.Max(TickSize, Math.Min(MaxStopPoints, distPoints));
             return Math.Max(MinStopTicks, (int)Math.Ceiling(distPoints / TickSize));
         }
@@ -1298,46 +1302,51 @@ namespace NinjaTrader.NinjaScript.Strategies
         public double MaxStopPoints { get; set; }
 
         [NinjaScriptProperty]
+        [Range(1, 2)]
+        [Display(Name = "Swing Close Stop Buffer Ticks", GroupName = "Risk", Order = 10)]
+        public int SwingCloseStopBufferTicks { get; set; }
+
+        [NinjaScriptProperty]
         [Range(1.0, 4.0)]
-        [Display(Name = "Risk Reward Multiple", GroupName = "Risk", Order = 10)]
+        [Display(Name = "Risk Reward Multiple", GroupName = "Risk", Order = 11)]
         public double RiskRewardMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Range(50.0, 5000.0)]
-        [Display(Name = "Max Risk Per Trade ($)", GroupName = "Risk", Order = 11)]
+        [Display(Name = "Max Risk Per Trade ($)", GroupName = "Risk", Order = 12)]
         public double MaxRiskPerTradeDollars { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Break Even", GroupName = "Risk", Order = 12)]
+        [Display(Name = "Enable Break Even", GroupName = "Risk", Order = 13)]
         public bool EnableBreakEven { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.5, 3.0)]
-        [Display(Name = "Break Even Trigger (R)", GroupName = "Risk", Order = 13)]
+        [Display(Name = "Break Even Trigger (R)", GroupName = "Risk", Order = 14)]
         public double BreakEvenTriggerR { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 10)]
-        [Display(Name = "Break Even Plus Ticks", GroupName = "Risk", Order = 14)]
+        [Display(Name = "Break Even Plus Ticks", GroupName = "Risk", Order = 15)]
         public int BreakEvenPlusTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Re-trade Excursion Filter", GroupName = "Risk", Order = 15)]
+        [Display(Name = "Enable Re-trade Excursion Filter", GroupName = "Risk", Order = 16)]
         public bool EnableRetradeExcursionFilter { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.5, 3.0)]
-        [Display(Name = "Re-trade Excursion ATR Multiple", GroupName = "Risk", Order = 16)]
+        [Display(Name = "Re-trade Excursion ATR Multiple", GroupName = "Risk", Order = 17)]
         public double RetradeExcursionAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 10)]
-        [Display(Name = "Max Trades Per Zone Cycle", GroupName = "Risk", Order = 17)]
+        [Display(Name = "Max Trades Per Zone Cycle", GroupName = "Risk", Order = 18)]
         public int MaxTradesPerZoneCycle { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.05, 1.0)]
-        [Display(Name = "Confirm Body ATR Multiple", GroupName = "Risk", Order = 18)]
+        [Display(Name = "Confirm Body ATR Multiple", GroupName = "Risk", Order = 19)]
         public double ConfirmBodyAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
