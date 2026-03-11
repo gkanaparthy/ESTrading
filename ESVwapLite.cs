@@ -167,7 +167,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TimeStopBars = 8;
                 TimeStopMinR = 0.5;
                 EnableSwingCloseTrailing = true;
-                SwingCloseTrailLookbackBars = 3;
+                SwingCloseTrailLookbackBars = 5;
                 SwingCloseTrailBufferTicks = 1;
                 SwingCloseTrailStartR = 1.0;
                 EnableRetradeExcursionFilter = true;
