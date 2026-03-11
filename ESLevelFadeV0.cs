@@ -35,6 +35,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private string workingLevel;
         private bool workingIsLong;
         private double workingLevelPrice;
+        private bool cancelRequested;
 
         protected override void OnStateChange()
         {
@@ -133,9 +134,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (IsLevelBlocked(lv.Name))
                     continue;
 
-                // approach-sensitive side
-                bool approachFromAbove = Close[1] > lv.Price && Close[0] <= Close[1];
-                bool approachFromBelow = Close[1] < lv.Price && Close[0] >= Close[1];
+                // approach-sensitive side, based on prior-side + actual touch this bar
+                bool touched = Low[0] <= lv.Price && High[0] >= lv.Price;
+                if (!touched)
+                    continue;
+
+                bool approachFromAbove = Close[1] > lv.Price || (Close[1] == lv.Price && Close[2] > lv.Price);
+                bool approachFromBelow = Close[1] < lv.Price || (Close[1] == lv.Price && Close[2] < lv.Price);
 
                 if (approachFromAbove)
                     longCandidates.Add(lv);   // support behavior
@@ -204,10 +209,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             // if working order is for different level/side, replace it
-            if (workingEntry != null && (workingLevel != pickLevel || workingIsLong != pickLong))
+            if (!string.IsNullOrEmpty(workingSignal) && (workingLevel != pickLevel || workingIsLong != pickLong))
                 CancelWorkingEntry("REPLACE_BETTER_LEVEL");
 
-            if (workingEntry == null)
+            // hard duplicate guard: signal presence means an entry intent/order already exists
+            if (string.IsNullOrEmpty(workingSignal) && !cancelRequested)
                 PlaceEntry(pickLong, pickLevel, pickPrice);
         }
 
@@ -222,10 +228,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             SetStopLoss(signal, CalculationMode.Ticks, stopTicks, false);
             SetProfitTarget(signal, CalculationMode.Ticks, targetTicks);
 
+            workingEntry = null;
             workingSignal = signal;
             workingLevel = levelName;
             workingIsLong = isLong;
             workingLevelPrice = levelPrice;
+            cancelRequested = false;
 
             if (isLong)
                 EnterLongLimit(DefaultQuantity, levelPrice, signal);
@@ -238,16 +246,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void CancelWorkingEntry(string reason)
         {
+            if (string.IsNullOrEmpty(workingSignal))
+                return;
+
+            cancelRequested = true;
+
+            if (EnableLogs)
+                Print($"[{Time[0]:MM-dd HH:mm}] CANCEL_REQ signal={workingSignal} reason={reason}");
+
             if (workingEntry != null && (workingEntry.OrderState == OrderState.Working || workingEntry.OrderState == OrderState.Accepted || workingEntry.OrderState == OrderState.Submitted))
                 CancelOrder(workingEntry);
-
-            if (EnableLogs && !string.IsNullOrEmpty(workingSignal))
-                Print($"[{Time[0]:MM-dd HH:mm}] CANCEL signal={workingSignal} reason={reason}");
-
-            workingEntry = null;
-            workingSignal = null;
-            workingLevel = null;
-            workingLevelPrice = 0;
         }
 
         private void ResetForNewSession()
@@ -270,6 +278,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             lockAnchorPrice.Clear();
 
             CancelWorkingEntry("NEW_SESSION");
+
+            // hard reset local handles at session boundary
+            workingEntry = null;
+            workingSignal = null;
+            workingLevel = null;
+            workingLevelPrice = 0;
+            cancelRequested = false;
         }
 
         private bool IsLevelBlocked(string levelName)
@@ -318,6 +333,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 workingEntry = order;
 
+                if (cancelRequested && (orderState == OrderState.Working || orderState == OrderState.Accepted || orderState == OrderState.Submitted))
+                    CancelOrder(order);
+
                 if (orderState == OrderState.Cancelled || orderState == OrderState.Rejected || orderState == OrderState.Filled)
                 {
                     if (orderState != OrderState.Filled)
@@ -326,6 +344,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         workingSignal = null;
                         workingLevel = null;
                         workingLevelPrice = 0;
+                        cancelRequested = false;
                     }
                 }
             }
@@ -361,6 +380,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             workingSignal = null;
             workingLevel = null;
             workingLevelPrice = 0;
+            cancelRequested = false;
         }
 
         [NinjaScriptProperty]
