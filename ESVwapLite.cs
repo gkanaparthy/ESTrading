@@ -964,12 +964,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 dayLowTime = Time[0];
             }
 
-            // pre-market window: from session start to 08:29:59 CST
-            int cmeTime = GetCmeTimeInt(Time[0]);
-            if (hasPreMarketLevels && cmeTime <= 82959)
+            // Pre-market window: session start day (5 PM → midnight) + next morning (midnight → 8:29:59 AM CST)
+            // cmeTime <= 82959 alone misses the 17:00–23:59 portion of the overnight session.
+            // Fix: bar is pre-market if it's on the session start calendar date (overnight side)
+            //      OR it's after midnight with time < 08:30 on any subsequent date in the session.
+            if (hasPreMarketLevels)
             {
-                preMarketHigh = Math.Max(preMarketHigh, High[0]);
-                preMarketLow = Math.Min(preMarketLow, Low[0]);
+                DateTime cmeBarTime = GetCmeTime(Time[0]);
+                bool isPreMarketBar = (cmeBarTime.Date == sessionDate)                      // 5 PM–midnight side
+                                   || (cmeBarTime.TimeOfDay < TimeSpan.FromHours(8.5));    // midnight–8:29:59 AM side
+                if (isPreMarketBar)
+                {
+                    preMarketHigh = Math.Max(preMarketHigh, High[0]);
+                    preMarketLow = Math.Min(preMarketLow, Low[0]);
+                }
             }
         }
 
