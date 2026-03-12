@@ -781,10 +781,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            var prevHighBrush = new SolidColorBrush(Color.FromArgb(110, 78, 121, 167));   // muted steel blue
-            var prevLowBrush = new SolidColorBrush(Color.FromArgb(110, 72, 160, 140));    // muted teal
-            var preHighBrush = new SolidColorBrush(Color.FromArgb(110, 181, 142, 76));    // muted amber
-            var preLowBrush = new SolidColorBrush(Color.FromArgb(110, 147, 109, 184));    // muted violet
+            var prevHighBrush = new SolidColorBrush(Color.FromArgb(255, 74, 144, 226));    // vivid blue
+            var prevLowBrush = new SolidColorBrush(Color.FromArgb(255, 39, 201, 163));    // vivid teal
+            var preHighBrush = new SolidColorBrush(Color.FromArgb(255, 230, 160, 30));    // vivid amber
+            var preLowBrush = new SolidColorBrush(Color.FromArgb(255, 175, 112, 232));    // vivid violet
 
             if (hasPrevSessionLevels)
             {
