@@ -116,6 +116,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int setupBar;
         private AnchorKind setupAnchorKind;
         private string setupZoneId;
+        private int setupConfirmCount;
 
         // break-even management
         private string activeSignalName;
@@ -175,6 +176,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MaxTradesPerZoneCycle = 2;
                 MaxTradesPerCluster = 2;
                 ConfirmBodyAtrMultiple = 0.2;
+                RequireConfirmCandles = 2;
 
                 // touch/zone behavior
                 TouchToleranceTicks = 2;
@@ -337,16 +339,28 @@ namespace NinjaTrader.NinjaScript.Strategies
                         PrintWithContext("SETUP_CANCELLED timeout kind=" + setupAnchorKind + " side=" + (setupIsLong ? "L" : "S"));
                     setupActive = false;
                     setupZoneId = null;
+                    setupConfirmCount = 0;
                 }
                 else if (setupIsLong)
                 {
                     // keep waiting while close is below anchor; do not cancel until timeout
                     double body = Math.Abs(Close[0] - Open[0]);
                     bool bodyOk = body >= (ConfirmBodyAtrMultiple * atrVal);
-                    if (Close[0] > Open[0] && Close[0] >= liveAvwap && bodyOk)
+
+                    // count consecutive closes above level; reset if close falls back below
+                    if (Close[0] >= liveAvwap)
+                        setupConfirmCount++;
+                    else
+                        setupConfirmCount = 0;
+
+                    if (EnableLogs)
+                        PrintWithContext("SETUP_CONFIRM_LONG confirmCount=" + setupConfirmCount + "/" + RequireConfirmCandles + " close=" + Close[0].ToString("F2") + " anchor=" + liveAvwap.ToString("F2"));
+
+                    if (setupConfirmCount >= RequireConfirmCandles && Close[0] > Open[0] && bodyOk)
                     {
                         TrySubmitEntry(true, liveAvwap, setupAnchorKind, setupZoneId);
                         setupActive = false;
+                        setupConfirmCount = 0;
                         setupZoneId = null;
                         return;
                     }
@@ -356,10 +370,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // keep waiting while close is above anchor; do not cancel until timeout
                     double body = Math.Abs(Close[0] - Open[0]);
                     bool bodyOk = body >= (ConfirmBodyAtrMultiple * atrVal);
-                    if (Close[0] < Open[0] && Close[0] <= liveAvwap && bodyOk)
+
+                    // count consecutive closes below level; reset if close pops back above
+                    if (Close[0] <= liveAvwap)
+                        setupConfirmCount++;
+                    else
+                        setupConfirmCount = 0;
+
+                    if (EnableLogs)
+                        PrintWithContext("SETUP_CONFIRM_SHORT confirmCount=" + setupConfirmCount + "/" + RequireConfirmCandles + " close=" + Close[0].ToString("F2") + " anchor=" + liveAvwap.ToString("F2"));
+
+                    if (setupConfirmCount >= RequireConfirmCandles && Close[0] < Open[0] && bodyOk)
                     {
                         TrySubmitEntry(false, liveAvwap, setupAnchorKind, setupZoneId);
                         setupActive = false;
+                        setupConfirmCount = 0;
                         setupZoneId = null;
                         return;
                     }
@@ -424,6 +449,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 setupBar = CurrentBar;
                 setupAnchorKind = selected.Kind;
                 setupZoneId = zoneId;
+                setupConfirmCount = 0;
 
                 if (EnableLogs)
                     PrintWithContext("SETUP_ARMED side=" + (setupIsLong ? "LONG" : "SHORT") + " kind=" + selected.Kind + " zone=" + zoneId + " avwap=" + avwap.ToString("F2"));
@@ -1469,6 +1495,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(0.05, 1.0)]
         [Display(Name = "Confirm Body ATR Multiple", GroupName = "Risk", Order = 27)]
         public double ConfirmBodyAtrMultiple { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "Require Confirm Candles (closes above/below level)", GroupName = "Entry", Order = 7)]
+        public int RequireConfirmCandles { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
