@@ -41,6 +41,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         private const int CmeRthStart = 83000;
+        private const int PreMarketWindowStart = 30000; // 3:00 AM CST = 4:00 AM ET (US pre-market open)
         private const int CmeRthEnd = 150000;
         private const string RelevantAnchorLabelTag = "ESVwapLite.RelevantAnchor.Label";
         private const string PrevSessionHighLineTag = "ESVwapLite.Level.PrevSessionHigh.Line";
@@ -921,10 +922,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             dayLowBarIndex = CurrentBar;
             dayLowTime = Time[0];
 
-            // pre-market levels start from session start and freeze at 08:29:59 CST
-            preMarketHigh = High[0];
-            preMarketLow = Low[0];
-            hasPreMarketLevels = true;
+            // pre-market window is 3:00 AM–8:29:59 AM CST (US pre-market / SPY-style)
+            // don't initialize from the 5 PM session start bar — wait for the window
+            preMarketHigh = double.NaN;
+            preMarketLow = double.NaN;
+            hasPreMarketLevels = false;
             dailyTrades = 0;
             anchorCooldowns.Clear();
             anchorUsageCounts.Clear();
@@ -964,16 +966,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 dayLowTime = Time[0];
             }
 
-            // Pre-market window: session start day (5 PM → midnight) + next morning (midnight → 8:29:59 AM CST)
-            // cmeTime <= 82959 alone misses the 17:00–23:59 portion of the overnight session.
-            // Fix: bar is pre-market if it's on the session start calendar date (overnight side)
-            //      OR it's after midnight with time < 08:30 on any subsequent date in the session.
-            if (hasPreMarketLevels)
+            // Pre-market window: 3:00 AM CST (4:00 AM ET) → 8:29:59 AM CST (US pre-market / SPY-style)
+            int cmeTime = GetCmeTimeInt(Time[0]);
+            if (cmeTime >= PreMarketWindowStart && cmeTime < CmeRthStart)
             {
-                DateTime cmeBarTime = GetCmeTime(Time[0]);
-                bool isPreMarketBar = (cmeBarTime.Date == sessionDate)                      // 5 PM–midnight side
-                                   || (cmeBarTime.TimeOfDay < TimeSpan.FromHours(8.5));    // midnight–8:29:59 AM side
-                if (isPreMarketBar)
+                if (!hasPreMarketLevels)
+                {
+                    // first bar entering the window — initialize
+                    preMarketHigh = High[0];
+                    preMarketLow = Low[0];
+                    hasPreMarketLevels = true;
+                }
+                else
                 {
                     preMarketHigh = Math.Max(preMarketHigh, High[0]);
                     preMarketLow = Math.Min(preMarketLow, Low[0]);
