@@ -173,6 +173,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnableRetradeExcursionFilter = true;
                 RetradeExcursionAtrMultiple = 2.0;
                 MaxTradesPerZoneCycle = 2;
+                MaxTradesPerCluster = 2;
                 ConfirmBodyAtrMultiple = 0.2;
 
                 // touch/zone behavior
@@ -394,12 +395,21 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 bool candidateLong = inferredLong;
 
-                // zone trade cap check (independent of excursion filter)
+                // cluster/zone trade caps
                 if (!string.IsNullOrEmpty(zoneId))
                 {
                     int zCount = zoneTradeCount.ContainsKey(zoneId) ? zoneTradeCount[zoneId] : 0;
-                    bool excursionBlocking = EnableRetradeExcursionFilter && zoneNeedsExcursion.ContainsKey(zoneId) && zoneNeedsExcursion[zoneId];
 
+                    // hard per-cluster cap (session-level, independent of excursion)
+                    if (zCount >= MaxTradesPerCluster)
+                    {
+                        if (EnableLogs)
+                            PrintWithContext("SETUP_BLOCKED reason=ClusterTradeCap zone=" + zoneId + " count=" + zCount + " anchor=" + avwap.ToString("F2"));
+                        return;
+                    }
+
+                    // cycle cap (can be reset by excursion logic)
+                    bool excursionBlocking = EnableRetradeExcursionFilter && zoneNeedsExcursion.ContainsKey(zoneId) && zoneNeedsExcursion[zoneId];
                     if (zCount >= MaxTradesPerZoneCycle && excursionBlocking)
                     {
                         if (EnableLogs)
@@ -1451,8 +1461,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int MaxTradesPerZoneCycle { get; set; }
 
         [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Max Trades Per Cluster (Session)", GroupName = "Risk", Order = 26)]
+        public int MaxTradesPerCluster { get; set; }
+
+        [NinjaScriptProperty]
         [Range(0.05, 1.0)]
-        [Display(Name = "Confirm Body ATR Multiple", GroupName = "Risk", Order = 26)]
+        [Display(Name = "Confirm Body ATR Multiple", GroupName = "Risk", Order = 27)]
         public double ConfirmBodyAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
