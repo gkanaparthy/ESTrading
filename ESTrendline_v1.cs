@@ -1419,7 +1419,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (uptrendLine != null)
             {
                 Draw.Line(this, TagUp,
-                    false,
                     AbsTime(uptrendLine.A.BarIndex), uptrendLine.A.Price,
                     AbsTime(uptrendLine.B.BarIndex), uptrendLine.B.Price,
                     Brushes.LimeGreen);
@@ -1428,7 +1427,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (downtrendLine != null)
             {
                 Draw.Line(this, TagDn,
-                    false,
                     AbsTime(downtrendLine.A.BarIndex), downtrendLine.A.Price,
                     AbsTime(downtrendLine.B.BarIndex), downtrendLine.B.Price,
                     Brushes.OrangeRed);
@@ -1442,7 +1440,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (safety != null)
                 {
                     Draw.Line(this, TagSafety,
-                        false,
                         AbsTime(safety.A.BarIndex), safety.A.Price,
                         AbsTime(safety.B.BarIndex), safety.B.Price,
                         Brushes.Red);
