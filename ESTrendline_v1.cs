@@ -121,6 +121,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Segment context for the current trade (for parent-line profit taking)
         private string activeSegmentKey;
         private string activeParentSegmentKey;
+        private bool activeParentIsUpSegment; // true = parent in uptrendSegments, false = downtrendSegments
         private bool parentTpDone;
 
         private int tradesThisSession;
@@ -434,6 +435,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             ValidateTrendlines();
             UpdateTouches(uptrendLine);
             UpdateTouches(downtrendLine);
+            foreach (var seg in uptrendSegments)
+                UpdateTouches(seg);
+            foreach (var seg in downtrendSegments)
+                UpdateTouches(seg);
 
             DrawLines();
 
@@ -532,6 +537,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             activeSegmentKey = null;
             activeParentSegmentKey = null;
+            activeParentIsUpSegment = false;
             parentTpDone = false;
 
             uptrendLine = null;
@@ -578,15 +584,24 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (isPivotHigh)
             {
                 var sp = new SwingPoint(i, candidateHigh, AbsTime(i), true);
+                int prevCount = pivotHighs.Count;
                 AddSwing(pivotHighs, sp);
-                TryChainDowntrend(sp);
+                // Only chain if AddSwing actually accepted this swing (not rejected as duplicate/too-close)
+                bool wasAdded = pivotHighs.Count > prevCount ||
+                    (pivotHighs.Count > 0 && pivotHighs[pivotHighs.Count - 1].BarIndex == sp.BarIndex);
+                if (wasAdded)
+                    TryChainDowntrend(sp);
             }
 
             if (isPivotLow)
             {
                 var sp = new SwingPoint(i, candidateLow, AbsTime(i), false);
+                int prevCount = pivotLows.Count;
                 AddSwing(pivotLows, sp);
-                TryChainUptrend(sp);
+                bool wasAdded = pivotLows.Count > prevCount ||
+                    (pivotLows.Count > 0 && pivotLows[pivotLows.Count - 1].BarIndex == sp.BarIndex);
+                if (wasAdded)
+                    TryChainUptrend(sp);
             }
         }
 
@@ -783,6 +798,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             RestoreTouches(seg);
             downtrendSegments.Add(seg);
+            while (downtrendSegments.Count > MaxSwingLookback)
+                downtrendSegments.RemoveAt(0);
             if (EnableLogs)
                 Log2($"[CHAIN] DN seg {prev.BarIndex}->{cur.BarIndex} key={seg.Key}");
         }
@@ -809,6 +826,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             RestoreTouches(seg);
             uptrendSegments.Add(seg);
+            while (uptrendSegments.Count > MaxSwingLookback)
+                uptrendSegments.RemoveAt(0);
             if (EnableLogs)
                 Log2($"[CHAIN] UP seg {prev.BarIndex}->{cur.BarIndex} key={seg.Key}");
         }
@@ -842,13 +861,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                 downtrendLine.IsValid = IsSlopeValid(downtrendLine) && ValidateZeroIntersection(downtrendLine, downtrendLine.A.BarIndex, CurrentBar);
         }
 
-        // Invalidation rule (Tori-style): a line is invalid if it crosses the candle BODY.
-        // Applies to any line we draw (up or down). Strict/inclusive: touching body edge counts as invalid.
+        // Invalidation rule (Tori-style): a line is invalid if it meaningfully crosses the candle BODY.
+        // 3-tick tolerance: line must penetrate at least 3 ticks inside the body to count as invalid.
+        // This handles doji candles (zero body) and shallow grazes automatically.
         private bool ValidateZeroIntersection(TrendLineModel line, int fromBar, int toBar)
         {
             if (line == null)
                 return false;
 
+            double tol = 3 * TickSize;
             int start = Math.Max(0, fromBar);
             int end = Math.Min(CurrentBar, toBar);
             for (int b = start; b <= end; b++)
@@ -859,7 +880,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double bodyLow = Math.Min(o, c);
                 double bodyHigh = Math.Max(o, c);
 
-                if (lv >= bodyLow && lv <= bodyHigh)
+                // Line must be >= 3 ticks inside the body on both sides to be considered invalid.
+                if (lv >= bodyLow + tol && lv <= bodyHigh - tol)
                     return false;
             }
             return true;
@@ -1023,18 +1045,28 @@ namespace NinjaTrader.NinjaScript.Strategies
             partialTargetTicks = targetTicks;
 
             // segment context: break uses the line that was broken (opposite of direction)
+            // BreakLong = broke above DN line → parent is in downtrendSegments (activeParentIsUpSegment=false)
+            // BreakShort = broke below UP line → parent is in uptrendSegments (activeParentIsUpSegment=true)
             TrendLineModel broken = pendingBreakDir > 0 ? downtrendLine : uptrendLine;
             if (broken != null)
             {
                 activeSegmentKey = broken.Key;
-                activeParentSegmentKey = pendingBreakDir > 0
-                    ? GetParentSegmentKey(downtrendSegments, activeSegmentKey)
-                    : GetParentSegmentKey(uptrendSegments, activeSegmentKey);
+                if (pendingBreakDir > 0)
+                {
+                    activeParentSegmentKey = GetParentSegmentKey(downtrendSegments, activeSegmentKey);
+                    activeParentIsUpSegment = false;
+                }
+                else
+                {
+                    activeParentSegmentKey = GetParentSegmentKey(uptrendSegments, activeSegmentKey);
+                    activeParentIsUpSegment = true;
+                }
             }
             else
             {
                 activeSegmentKey = null;
                 activeParentSegmentKey = null;
+                activeParentIsUpSegment = false;
             }
             parentTpDone = false;
 
@@ -1076,6 +1108,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // segment context (for parent-line TP)
                     activeSegmentKey = uptrendLine.Key;
                     activeParentSegmentKey = GetParentSegmentKey(uptrendSegments, activeSegmentKey);
+                    activeParentIsUpSegment = true;
                     parentTpDone = false;
 
                     EnterLong(DefaultQuantity, "BounceLong");
@@ -1107,6 +1140,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                     activeSegmentKey = downtrendLine.Key;
                     activeParentSegmentKey = GetParentSegmentKey(downtrendSegments, activeSegmentKey);
+                    activeParentIsUpSegment = false;
                     parentTpDone = false;
 
                     EnterShort(DefaultQuantity, "BounceShort");
@@ -1382,7 +1416,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             // 1.5) Parent-line take profit (when entry was taken from a continuation segment)
             if (!parentTpDone && !string.IsNullOrEmpty(activeParentSegmentKey))
             {
-                TrendLineModel parent = dir > 0
+                // Use activeParentIsUpSegment (set at entry time) — NOT dir — to pick the right list.
+                // Break trades store the parent in the opposite direction's segment list.
+                TrendLineModel parent = activeParentIsUpSegment
                     ? FindSegmentByKey(uptrendSegments, activeParentSegmentKey)
                     : FindSegmentByKey(downtrendSegments, activeParentSegmentKey);
 
@@ -1760,9 +1796,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!ShowLinesOnChart)
                 return;
 
+            // Draw primary lines (latest active ray)
             if (uptrendLine != null)
             {
-                // Draw as a ray: anchor at A and extend to current bar using projected value.
                 double yNow = uptrendLine.ValueAtBar(CurrentBar);
                 Draw.Line(this, TagUp, false,
                     CurrentBar - uptrendLine.A.BarIndex, uptrendLine.A.Price,
@@ -1779,7 +1815,37 @@ namespace NinjaTrader.NinjaScript.Strategies
                     Brushes.OrangeRed, DashStyleHelper.Solid, 2);
             }
 
-            // safety line highlight while in trade
+            // Draw chained uptrend segments (dashed, thinner; latest = solid)
+            for (int k = 0; k < uptrendSegments.Count; k++)
+            {
+                TrendLineModel seg = uptrendSegments[k];
+                if (seg == null || !seg.IsValid) continue;
+                bool isLatest = (k == uptrendSegments.Count - 1);
+                double yNow = seg.ValueAtBar(CurrentBar);
+                Draw.Line(this, TagUp + "_chain_" + k, false,
+                    CurrentBar - seg.A.BarIndex, seg.A.Price,
+                    0, yNow,
+                    Brushes.LimeGreen,
+                    isLatest ? DashStyleHelper.Solid : DashStyleHelper.Dash,
+                    isLatest ? 2 : 1);
+            }
+
+            // Draw chained downtrend segments
+            for (int k = 0; k < downtrendSegments.Count; k++)
+            {
+                TrendLineModel seg = downtrendSegments[k];
+                if (seg == null || !seg.IsValid) continue;
+                bool isLatest = (k == downtrendSegments.Count - 1);
+                double yNow = seg.ValueAtBar(CurrentBar);
+                Draw.Line(this, TagDn + "_chain_" + k, false,
+                    CurrentBar - seg.A.BarIndex, seg.A.Price,
+                    0, yNow,
+                    Brushes.OrangeRed,
+                    isLatest ? DashStyleHelper.Solid : DashStyleHelper.Dash,
+                    isLatest ? 2 : 1);
+            }
+
+            // Safety line highlight while in trade
             if (Position.MarketPosition != MarketPosition.Flat)
             {
                 int dir = Position.MarketPosition == MarketPosition.Long ? +1 : -1;
