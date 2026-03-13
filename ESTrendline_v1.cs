@@ -339,8 +339,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 TouchZoneTicks = 4;
                 MinBarsBetweenTouches = 6;
-                MinTouchCount = 3;
-                MinBarsFromFirstTouch = 30;
+                MinTouchCount = 2;
+                MinBarsFromFirstTouch = 10;
 
                 UseHTFFilter = true;
                 HTFEmaPeriod = 20;
@@ -357,7 +357,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MaxSafetyStopTicks = 30;
                 TargetATRMultiplier = 2.0;
 
-                WaitForRetest = true;
+                WaitForRetest = false;
                 RetestZoneTicks = 4;
                 MaxRetestWaitBars = 15;
                 MaxTradesPerSession = 2;
@@ -468,7 +468,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     initialRiskTicks = HardStopMaxTicks;
 
                 if (EnableLogs)
-                    Print($"[ENTRY] {activeEntrySignal} qty={Position.Quantity} @ {entryPrice:0.00}, riskTicks={initialRiskTicks:0.0}, targetTicks={partialTargetTicks:0.0}");
+                    Log2($"[ENTRY] {activeEntrySignal} qty={Position.Quantity} @ {entryPrice:0.00}, riskTicks={initialRiskTicks:0.0}, targetTicks={partialTargetTicks:0.0}");
             }
 
             // detect session realized loss updates via cum profit delta on flat
@@ -476,7 +476,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 double dailyPnl = GetDailyPnl();
                 if (EnableLogs)
-                    Print($"[FLAT] DailyPnL={dailyPnl:0.00}, trades={tradesThisSession}");
+                    Log2($"[FLAT] DailyPnL={dailyPnl:0.00}, trades={tradesThisSession}");
             }
         }
         #endregion
@@ -495,7 +495,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             pendingBreakSlope = 0;
 
             if (EnableLogs)
-                Print($"[SESSION] New session at {Time[0]} | CumProfitBase={sessionStartCumProfit:0.00}");
+                Log2($"[SESSION] New session at {Time[0]} | CumProfitBase={sessionStartCumProfit:0.00}");
         }
 
         private void ResetSessionState()
@@ -817,7 +817,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ledgerBars.Add(CurrentBar);
 
             if (EnableLogs)
-                Print($"[TOUCH] {(line.IsUptrend ? "UP" : "DN")} line key={line.Key} touch#{line.TouchBars.Count} at bar {CurrentBar}");
+                Log2($"[TOUCH] {(line.IsUptrend ? "UP" : "DN")} line key={line.Key} touch#{line.TouchBars.Count} at bar {CurrentBar}");
         }
 
         private void DetectBreakSignal()
@@ -840,7 +840,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 downtrendLine.IsConsumed = true;
 
                 if (EnableLogs)
-                    Print($"[BREAK] LONG break at bar {CurrentBar}, line={downtrendLine.Key}");
+                    Log2($"[BREAK] LONG break at bar {CurrentBar}, line={downtrendLine.Key}");
             }
             else if (shortBreak)
             {
@@ -853,7 +853,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 uptrendLine.IsConsumed = true;
 
                 if (EnableLogs)
-                    Print($"[BREAK] SHORT break at bar {CurrentBar}, line={uptrendLine.Key}");
+                    Log2($"[BREAK] SHORT break at bar {CurrentBar}, line={uptrendLine.Key}");
             }
         }
 
@@ -883,7 +883,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (CurrentBar - pendingBreakBar > MaxRetestWaitBars)
             {
                 if (EnableLogs)
-                    Print("[PENDING] expired waiting for retest");
+                    Log2("[PENDING] expired waiting for retest");
                 ClearPendingBreak();
                 return;
             }
@@ -916,7 +916,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!held)
             {
                 if (EnableLogs)
-                    Print("[PENDING] retest failed");
+                    Log2("[PENDING] retest failed");
                 ClearPendingBreak();
                 return;
             }
@@ -930,7 +930,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!PreEntryRiskGate(pendingBreakDir, false, safety, out double estRiskTicks, out double rr, out double stopPx, out double targetTicks, out string failReason))
             {
                 if (EnableLogs)
-                    Print($"[SKIP] Break {mode} failed risk gate: {failReason}");
+                    Log2($"[SKIP] Break {mode} failed risk gate: {failReason}");
                 ClearPendingBreak();
                 return;
             }
@@ -950,7 +950,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             SetStopForSignal(pendingBreakDir > 0 ? "BreakLong" : "BreakShort", currentHardStop);
 
             if (EnableLogs)
-                Print($"[ENTRY-ARMED] Break {mode} dir={(pendingBreakDir > 0 ? "LONG" : "SHORT")}, riskTicks={estRiskTicks:0.0}, rr={rr:0.00}, stop={stopPx:0.00}");
+                Log2($"[ENTRY-ARMED] Break {mode} dir={(pendingBreakDir > 0 ? "LONG" : "SHORT")}, riskTicks={estRiskTicks:0.0}, rr={rr:0.00}, stop={stopPx:0.00}");
 
             ClearPendingBreak();
         }
@@ -980,13 +980,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                     submittedEntryThisBar = true;
 
                     if (EnableLogs)
-                        Print($"[ENTRY-ARMED] Bounce LONG riskTicks={estRiskTicks:0.0}, rr={rr:0.00}, stop={stopPx:0.00}");
+                        Log2($"[ENTRY-ARMED] Bounce LONG riskTicks={estRiskTicks:0.0}, rr={rr:0.00}, stop={stopPx:0.00}");
 
                     return;
                 }
                 else if (EnableLogs)
                 {
-                    Print($"[SKIP] Bounce LONG failed risk gate: {failReasonLong}");
+                    Log2($"[SKIP] Bounce LONG failed risk gate: {failReasonLong}");
                 }
             }
 
@@ -1006,13 +1006,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                     submittedEntryThisBar = true;
 
                     if (EnableLogs)
-                        Print($"[ENTRY-ARMED] Bounce SHORT riskTicks={estRiskTicks:0.0}, rr={rr:0.00}, stop={stopPx:0.00}");
+                        Log2($"[ENTRY-ARMED] Bounce SHORT riskTicks={estRiskTicks:0.0}, rr={rr:0.00}, stop={stopPx:0.00}");
 
                     return;
                 }
                 else if (EnableLogs)
                 {
-                    Print($"[SKIP] Bounce SHORT failed risk gate: {failReasonShort}");
+                    Log2($"[SKIP] Bounce SHORT failed risk gate: {failReasonShort}");
                 }
             }
         }
@@ -1058,13 +1058,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 if (dir > 0 && htfBias <= 0)
                 {
-                    if (EnableLogs) Print($"[RISK] HTF_BIAS_BLOCK_LONG htfBias={htfBias}");
+                    if (EnableLogs) Log2($"[RISK] HTF_BIAS_BLOCK_LONG htfBias={htfBias}");
                     failReason = "HTF_BIAS_BLOCK_LONG";
                     return false;
                 }
                 if (dir < 0 && htfBias >= 0)
                 {
-                    if (EnableLogs) Print($"[RISK] HTF_BIAS_BLOCK_SHORT htfBias={htfBias}");
+                    if (EnableLogs) Log2($"[RISK] HTF_BIAS_BLOCK_SHORT htfBias={htfBias}");
                     failReason = "HTF_BIAS_BLOCK_SHORT";
                     return false;
                 }
@@ -1095,7 +1095,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         string expected = dir > 0 ? "UP" : "DN";
                         string up = uptrendLine == null ? "null" : $"key={uptrendLine.Key} valid={uptrendLine.IsValid} consumed={uptrendLine.IsConsumed} touches={(uptrendLine.TouchBars != null ? uptrendLine.TouchBars.Count : 0)}";
                         string dn = downtrendLine == null ? "null" : $"key={downtrendLine.Key} valid={downtrendLine.IsValid} consumed={downtrendLine.IsConsumed} touches={(downtrendLine.TouchBars != null ? downtrendLine.TouchBars.Count : 0)}";
-                        Print($"[RISK] SAFETY_LINE_INVALID expected={expected} safety={(safetyLine==null?"null":safetyLine.Key)} | up={up} | dn={dn}");
+                        Log2($"[RISK] SAFETY_LINE_INVALID expected={expected} safety={(safetyLine==null?"null":safetyLine.Key)} | up={up} | dn={dn}");
                     }
                     failReason = "SAFETY_LINE_INVALID";
                     return false;
@@ -1216,13 +1216,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!allowBounceNoSafety)
                 {
                     if (EnableLogs)
-                        Print("[EXIT] Safety line missing/invalid while in trade -> flatten");
+                        Log2("[EXIT] Safety line missing/invalid while in trade -> flatten");
                     if (dir > 0) ExitLong("SafetyMissing", activeEntrySignal);
                     else ExitShort("SafetyMissing", activeEntrySignal);
                     return;
                 }
                 if (EnableLogs)
-                    Print("[WARN] Safety line missing for bounce trade; managing with hard stop only.");
+                    Log2("[WARN] Safety line missing for bounce trade; managing with hard stop only.");
             }
 
             double safetyValue = safetyOk ? safety.ValueAtBar(CurrentBar) : double.NaN;
@@ -1233,7 +1233,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (safetyOk && ((dir > 0 && close < safetyValue) || (dir < 0 && close > safetyValue)))
             {
                 if (EnableLogs)
-                    Print($"[EXIT] SafetyLineViolation close={close:0.00} safety={safetyValue:0.00}");
+                    Log2($"[EXIT] SafetyLineViolation close={close:0.00} safety={safetyValue:0.00}");
                 if (dir > 0) ExitLong("SafetyLineViolation", activeEntrySignal);
                 else ExitShort("SafetyLineViolation", activeEntrySignal);
                 return;
@@ -1254,7 +1254,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 breakevenMoved = true;
                 if (EnableLogs)
-                    Print($"[RISK] Move to BE stop={currentHardStop:0.00}");
+                    Log2($"[RISK] Move to BE stop={currentHardStop:0.00}");
             }
 
             // 3) Partial at first target
@@ -1286,7 +1286,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
 
                     if (EnableLogs)
-                        Print($"[PARTIAL] qty={qtyToExit}, lockStop={currentHardStop:0.00}");
+                        Log2($"[PARTIAL] qty={qtyToExit}, lockStop={currentHardStop:0.00}");
                 }
             }
 
@@ -1294,7 +1294,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 partialTaken = true;
                 if (EnableLogs)
-                    Print("[PARTIAL] Single-contract mode: skipping scale-out, continuing with trail-only management.");
+                    Log2("[PARTIAL] Single-contract mode: skipping scale-out, continuing with trail-only management.");
             }
 
             // 4) Trail hard stop along safety with buffer (ratchet only)
@@ -1322,7 +1322,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (GetDailyPnl() <= -Math.Abs(MaxDailyLossDollars))
             {
                 if (EnableLogs)
-                    Print("[KILL] Daily loss limit hit, flattening and halting entries.");
+                    Log2("[KILL] Daily loss limit hit, flattening and halting entries.");
                 if (dir > 0) ExitLong("DailyLossLimit", activeEntrySignal);
                 else ExitShort("DailyLossLimit", activeEntrySignal);
             }
@@ -1330,6 +1330,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         #endregion
 
         #region Filters/helpers
+        private void Log2(string msg)
+        {
+            try
+            {
+                NinjaTrader.Code.Output.Process(msg, NinjaTrader.Code.PrintTo.OutputTab2);
+            }
+            catch
+            {
+                Print(msg);
+            }
+        }
+
         private void ProcessClosedTradesForCooldown()
         {
             int closedCount = SystemPerformance.AllTrades.Count;
@@ -1351,7 +1363,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     cooldownBarsRemaining = Math.Max(cooldownBarsRemaining, CooldownBarsAfterLoss);
                     if (EnableLogs)
-                        Print($"[COOLDOWN] Loss trade detected (PnL={pnl:0.00}, exit={exitTime}). Cooldown set to {cooldownBarsRemaining} bars.");
+                        Log2($"[COOLDOWN] Loss trade detected (PnL={pnl:0.00}, exit={exitTime}). Cooldown set to {cooldownBarsRemaining} bars.");
                 }
             }
 
@@ -1384,7 +1396,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     uptrendLine.IsConsumed = true;
                     consumedLineKeys.Add(uptrendLine.Key);
                     if (EnableLogs)
-                        Print($"[GAP] RTH open gapped below uptrend line. Invalidating {uptrendLine.Key}");
+                        Log2($"[GAP] RTH open gapped below uptrend line. Invalidating {uptrendLine.Key}");
                 }
             }
 
@@ -1397,7 +1409,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     downtrendLine.IsConsumed = true;
                     consumedLineKeys.Add(downtrendLine.Key);
                     if (EnableLogs)
-                        Print($"[GAP] RTH open gapped above downtrend line. Invalidating {downtrendLine.Key}");
+                        Log2($"[GAP] RTH open gapped above downtrend line. Invalidating {downtrendLine.Key}");
                 }
             }
         }
@@ -1458,7 +1470,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             bool ok = atrTicks >= MinATRTicks && atrTicks <= MaxATRTicks;
             if (!ok && EnableLogs)
-                Print($"[FILTER] VOLATILITY_FILTER atrTicks={atrTicks:0.0} min={MinATRTicks} max={MaxATRTicks}");
+                Log2($"[FILTER] VOLATILITY_FILTER atrTicks={atrTicks:0.0} min={MinATRTicks} max={MaxATRTicks}");
             return ok;
         }
 
