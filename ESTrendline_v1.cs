@@ -128,14 +128,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         private string activeActionLineKey;
         private string activeSafetyLineKey;
         private bool activeSafetyIsUpSegment; // true => lookup safety in uptrend segments/line, false => downtrend
-        private bool activeSafetyCtxSet;
-        private int activeSafetyAnchorBar;
-        private double activeSafetyAnchorPrice;
-        private double activeSafetySlope;
-
-        // Drawing cleanup counters for chained tags
-        private int lastDrawnUpChainCount;
-        private int lastDrawnDnChainCount;
 
         private int tradesThisSession;
         private int cooldownBarsRemaining;
@@ -556,13 +548,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             activeActionLineKey = null;
             activeSafetyLineKey = null;
             activeSafetyIsUpSegment = false;
-            activeSafetyCtxSet = false;
-            activeSafetyAnchorBar = -1;
-            activeSafetyAnchorPrice = 0;
-            activeSafetySlope = 0;
-
-            lastDrawnUpChainCount = 0;
-            lastDrawnDnChainCount = 0;
 
             uptrendLine = null;
             downtrendLine = null;
@@ -608,7 +593,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (isPivotHigh)
             {
                 var sp = new SwingPoint(i, candidateHigh, AbsTime(i), true);
-                bool wasAdded = AddSwing(pivotHighs, sp);
+                int prevCount = pivotHighs.Count;
+                AddSwing(pivotHighs, sp);
+                // Only chain if AddSwing actually accepted this swing (not rejected as duplicate/too-close)
+                bool wasAdded = pivotHighs.Count > prevCount ||
+                    (pivotHighs.Count > 0 && pivotHighs[pivotHighs.Count - 1].BarIndex == sp.BarIndex);
                 if (wasAdded)
                     TryChainDowntrend(sp);
             }
@@ -616,27 +605,29 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (isPivotLow)
             {
                 var sp = new SwingPoint(i, candidateLow, AbsTime(i), false);
-                bool wasAdded = AddSwing(pivotLows, sp);
+                int prevCount = pivotLows.Count;
+                AddSwing(pivotLows, sp);
+                bool wasAdded = pivotLows.Count > prevCount ||
+                    (pivotLows.Count > 0 && pivotLows[pivotLows.Count - 1].BarIndex == sp.BarIndex);
                 if (wasAdded)
                     TryChainUptrend(sp);
             }
         }
 
-        private bool AddSwing(List<SwingPoint> list, SwingPoint swing)
+        private void AddSwing(List<SwingPoint> list, SwingPoint swing)
         {
             if (list.Count > 0)
             {
                 SwingPoint last = list[list.Count - 1];
                 if (Math.Abs((swing.Price - last.Price) / TickSize) < MinSwingDiffTicks)
-                    return false;
+                    return;
                 if (swing.BarIndex <= last.BarIndex)
-                    return false;
+                    return;
             }
 
             list.Add(swing);
             while (list.Count > MaxSwingLookback)
                 list.RemoveAt(0);
-            return true;
         }
 
         private void RebuildTrendlines()
@@ -1094,7 +1085,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 activeActionLineKey = downtrendLine != null ? downtrendLine.Key : null;
                 activeSafetyLineKey = uptrendLine != null ? uptrendLine.Key : null;
                 activeSafetyIsUpSegment = true;
-                SetActiveSafetyContext(uptrendLine);
                 EnterLong(DefaultQuantity, "BreakLong");
             }
             else
@@ -1102,7 +1092,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 activeActionLineKey = uptrendLine != null ? uptrendLine.Key : null;
                 activeSafetyLineKey = downtrendLine != null ? downtrendLine.Key : null;
                 activeSafetyIsUpSegment = false;
-                SetActiveSafetyContext(downtrendLine);
                 EnterShort(DefaultQuantity, "BreakShort");
             }
 
@@ -1115,7 +1104,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (EnableLogs)
             {
                 Log2($"[ENTRY_CTX] mode=Break{mode} action={activeActionLineKey ?? "null"} safety={activeSafetyLineKey ?? "null"} dir={(pendingBreakDir > 0 ? "LONG" : "SHORT")}");
-                Log2($"[STOP_SRC] safetyLine={activeSafetyLineKey ?? "null"} logical={(safety != null ? safety.ValueAtBar(CurrentBar).ToString("0.00") : "na")} hard={stopPx:0.00}");
+                Log2($"[STOP_SRC] safetyLine={activeSafetyLineKey ?? "null"} logical={(GetSafetyLineForDir(pendingBreakDir) != null ? GetSafetyLineForDir(pendingBreakDir).ValueAtBar(CurrentBar).ToString("0.00") : "na")} hard={stopPx:0.00}");
                 Log2($"[ENTRY-ARMED] Break {mode} dir={(pendingBreakDir > 0 ? "LONG" : "SHORT")}, riskTicks={estRiskTicks:0.0}, rr={rr:0.00}, stop={stopPx:0.00}");
             }
 
@@ -1134,8 +1123,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // long bounce on uptrend support
             if (IsValidBounce(uptrendLine, +1))
             {
-                // For bounce, action and safety are the same structural line (the line we bounce from).
-                TrendLineModel safety = uptrendLine;
+                TrendLineModel safety = downtrendLine;
                 if (PreEntryRiskGate(+1, true, safety, out double estRiskTicks, out double rr, out double stopPx, out double targetTicks, out string failReasonLong))
                 {
                     initialRiskTicks = estRiskTicks;
@@ -1147,11 +1135,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                     activeParentIsUpSegment = true;
                     parentTpDone = false;
 
-                    // BounceLong: action=UP, safety=UP (same line for bounce setup)
+                    // BounceLong: action=UP, safety=DN
                     activeActionLineKey = uptrendLine != null ? uptrendLine.Key : null;
-                    activeSafetyLineKey = uptrendLine != null ? uptrendLine.Key : null;
-                    activeSafetyIsUpSegment = true;
-                    SetActiveSafetyContext(uptrendLine);
+                    activeSafetyLineKey = downtrendLine != null ? downtrendLine.Key : null;
+                    activeSafetyIsUpSegment = false;
 
                     EnterLong(DefaultQuantity, "BounceLong");
                     currentHardStop = stopPx;
@@ -1177,7 +1164,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // short bounce on downtrend resistance
             if (!submittedEntryThisBar && Position.MarketPosition == MarketPosition.Flat && IsValidBounce(downtrendLine, -1))
             {
-                TrendLineModel safety = downtrendLine;
+                TrendLineModel safety = uptrendLine;
                 if (PreEntryRiskGate(-1, true, safety, out double estRiskTicks, out double rr, out double stopPx, out double targetTicks, out string failReasonShort))
                 {
                     initialRiskTicks = estRiskTicks;
@@ -1188,11 +1175,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                     activeParentIsUpSegment = false;
                     parentTpDone = false;
 
-                    // BounceShort: action=DN, safety=DN (same line for bounce setup)
+                    // BounceShort: action=DN, safety=UP
                     activeActionLineKey = downtrendLine != null ? downtrendLine.Key : null;
-                    activeSafetyLineKey = downtrendLine != null ? downtrendLine.Key : null;
-                    activeSafetyIsUpSegment = false;
-                    SetActiveSafetyContext(downtrendLine);
+                    activeSafetyLineKey = uptrendLine != null ? uptrendLine.Key : null;
+                    activeSafetyIsUpSegment = true;
 
                     EnterShort(DefaultQuantity, "BounceShort");
                     currentHardStop = stopPx;
@@ -1265,30 +1251,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (segments[i] != null && segments[i].Key == key)
                     return segments[i];
             return null;
-        }
-
-        private void SetActiveSafetyContext(TrendLineModel safety)
-        {
-            if (safety == null)
-            {
-                activeSafetyCtxSet = false;
-                activeSafetyAnchorBar = -1;
-                activeSafetyAnchorPrice = 0;
-                activeSafetySlope = 0;
-                return;
-            }
-
-            activeSafetyCtxSet = true;
-            activeSafetyAnchorBar = safety.A.BarIndex;
-            activeSafetyAnchorPrice = safety.A.Price;
-            activeSafetySlope = safety.Slope;
-        }
-
-        private double ActiveSafetyValueAt(int absBar)
-        {
-            if (!activeSafetyCtxSet || activeSafetyAnchorBar < 0)
-                return double.NaN;
-            return activeSafetyAnchorPrice + activeSafetySlope * (absBar - activeSafetyAnchorBar);
         }
 
         private TrendLineModel ResolveActiveSafetyLine(int dir)
@@ -1375,10 +1337,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             double entry = Close[0];
             double safetyValue = safetyLine.ValueAtBar(CurrentBar);
 
-            // logical stop anchor uses safety line. For bounce, put stop beyond that line with BounceStopBufferTicks.
-            double logicalStop = isBounce
-                ? (dir > 0 ? safetyValue - BounceStopBufferTicks * TickSize : safetyValue + BounceStopBufferTicks * TickSize)
-                : safetyValue;
+            // logical stop anchor is always the safety line
+            double logicalStop = safetyValue;
 
             // hard stop = buffered beyond logical stop
             hardStopPrice = dir > 0
@@ -1420,27 +1380,24 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             // reward estimate: channel height vs ATR target
-            TrendLineModel targetRefLine;
-            if (isBounce)
+            TrendLineModel actionLine = dir > 0 ? downtrendLine : uptrendLine;
+            if (actionLine == null)
             {
-                // For bounce, safety/action are the same line; target reference is the opposite structure line.
-                targetRefLine = safetyLine.IsUptrend ? downtrendLine : uptrendLine;
-            }
-            else
-            {
-                // For break, target reference is the broken (action) line.
-                targetRefLine = dir > 0 ? downtrendLine : uptrendLine;
-            }
-
-            if (targetRefLine == null)
-            {
-                failReason = "NO_ACTION_LINE";
-                return false;
+                // For bounce fallback (no safety line), allow ATR-only target even if the opposite line is missing.
+                bool allowAtrOnlyTarget = isBounce && !RequireSafetyLineForBounce;
+                if (!allowAtrOnlyTarget)
+                {
+                    failReason = "NO_ACTION_LINE";
+                    return false;
+                }
             }
 
             double atrTicks = atr2m[0] / TickSize;
-            double channelHeightTicks = Math.Abs(targetRefLine.ValueAtBar(CurrentBar) - safetyLine.ValueAtBar(CurrentBar)) / TickSize;
+            double channelHeightTicks = (safetyOk && actionLine != null)
+                ? Math.Abs(actionLine.ValueAtBar(CurrentBar) - safetyLine.ValueAtBar(CurrentBar)) / TickSize
+                : 0.0;
 
+            // If safety line is missing (bounce fallback), use ATR-only target.
             targetTicks = Math.Max(channelHeightTicks, atrTicks * TargetATRMultiplier);
             if (targetTicks < 1)
             {
@@ -1467,20 +1424,24 @@ namespace NinjaTrader.NinjaScript.Strategies
             int dir = Position.MarketPosition == MarketPosition.Long ? +1 : -1;
             TrendLineModel safety = ResolveActiveSafetyLine(dir);
             bool safetyOk = !(safety == null || !safety.IsValid);
-            double safetyValue = safetyOk ? safety.ValueAtBar(CurrentBar) : ActiveSafetyValueAt(CurrentBar);
 
-            // If segment/line object was pruned, continue using persisted entry safety projection.
-            if (!safetyOk && !double.IsNaN(safetyValue))
-                safetyOk = true;
-
+            // If configured, allow bounce trades to continue without a safety line (hard stop + BE + partial only).
             if (!safetyOk)
             {
+                bool allowBounceNoSafety = activeIsBounce && !RequireSafetyLineForBounce;
+                if (!allowBounceNoSafety)
+                {
+                    if (EnableLogs)
+                        Log2("[EXIT] Safety line missing/invalid while in trade -> flatten");
+                    if (dir > 0) ExitLong("SafetyMissing", activeEntrySignal);
+                    else ExitShort("SafetyMissing", activeEntrySignal);
+                    return;
+                }
                 if (EnableLogs)
-                    Log2("[EXIT] Safety line missing/invalid while in trade -> flatten");
-                if (dir > 0) ExitLong("SafetyMissing", activeEntrySignal);
-                else ExitShort("SafetyMissing", activeEntrySignal);
-                return;
+                    Log2("[WARN] Safety line missing for bounce trade; managing with hard stop only.");
             }
+
+            double safetyValue = safetyOk ? safety.ValueAtBar(CurrentBar) : double.NaN;
             double close = Close[0];
             double unrealizedTicks = dir > 0 ? (close - entryPrice) / TickSize : (entryPrice - close) / TickSize;
 
@@ -1514,7 +1475,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                             int qtyToExit = 1;
                             if (dir > 0) ExitLong(qtyToExit, "ParentTP", activeEntrySignal);
                             else ExitShort(qtyToExit, "ParentTP", activeEntrySignal);
-                            partialTaken = true; // avoid same-bar double scale-out with regular PartialExit logic
                             if (EnableLogs)
                                 Log2($"[TP] ParentTP partial qty={qtyToExit} parent={parentLv:0.00} key={activeParentSegmentKey}");
                         }
@@ -1522,11 +1482,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                         {
                             if (dir > 0) ExitLong("ParentTP", activeEntrySignal);
                             else ExitShort("ParentTP", activeEntrySignal);
-                            partialTaken = true;
                             if (EnableLogs)
                                 Log2($"[TP] ParentTP full parent={parentLv:0.00} key={activeParentSegmentKey}");
-                            parentTpDone = true;
-                            return;
                         }
 
                         parentTpDone = true;
@@ -1770,18 +1727,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Time[] assumed in chart/session timezone. These windows are approximations.
             int t = ToTime(Time[0]);
 
-            // Chart is CST. Approximate high-impact windows:
-            // 7:30 CST (8:30 ET major releases: CPI/NFP/etc.)
+            // 8:30 ET major releases (CPI, NFP, etc.)
             int n = NewsBlackoutMinutes;
-            int pre730 = 73000 - n * 100;
-            int post730 = 73000 + n * 100;
-            if (t >= pre730 && t <= post730)
+            int pre830 = 83000 - n * 100;
+            int post830 = 83000 + n * 100;
+            if (t >= pre830 && t <= post830)
                 return true;
 
-            // 13:00 CST (14:00 ET FOMC statement window)
-            int pre100 = 130000 - n * 100;
-            int post100 = 130000 + n * 100;
-            if (t >= pre100 && t <= post100)
+            // 14:00 ET FOMC statement window
+            int pre200 = 140000 - n * 100;
+            int post200 = 140000 + n * 100;
+            if (t >= pre200 && t <= post200)
                 return true;
 
             return false;
@@ -1915,10 +1871,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     isLatest ? DashStyleHelper.Solid : DashStyleHelper.Dash,
                     isLatest ? 2 : 1);
             }
-            // Remove stale up-chain draw objects if the list shrank.
-            for (int k = uptrendSegments.Count; k < lastDrawnUpChainCount; k++)
-                RemoveDrawObject(TagUp + "_chain_" + k);
-            lastDrawnUpChainCount = uptrendSegments.Count;
 
             // Draw chained downtrend segments
             for (int k = 0; k < downtrendSegments.Count; k++)
@@ -1934,28 +1886,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                     isLatest ? DashStyleHelper.Solid : DashStyleHelper.Dash,
                     isLatest ? 2 : 1);
             }
-            for (int k = downtrendSegments.Count; k < lastDrawnDnChainCount; k++)
-                RemoveDrawObject(TagDn + "_chain_" + k);
-            lastDrawnDnChainCount = downtrendSegments.Count;
 
-            // Safety line highlight while in trade (use the same safety resolution used by management)
+            // Safety line highlight while in trade
             if (Position.MarketPosition != MarketPosition.Flat)
             {
                 int dir = Position.MarketPosition == MarketPosition.Long ? +1 : -1;
-                TrendLineModel safety = ResolveActiveSafetyLine(dir);
+                TrendLineModel safety = GetSafetyLineForDir(dir);
                 if (safety != null)
                 {
                     double yNow = safety.ValueAtBar(CurrentBar);
                     Draw.Line(this, TagSafety, false,
                         CurrentBar - safety.A.BarIndex, safety.A.Price,
-                        0, yNow,
-                        Brushes.Red, DashStyleHelper.Dash, 2);
-                }
-                else if (activeSafetyCtxSet && activeSafetyAnchorBar >= 0)
-                {
-                    double yNow = ActiveSafetyValueAt(CurrentBar);
-                    Draw.Line(this, TagSafety, false,
-                        CurrentBar - activeSafetyAnchorBar, activeSafetyAnchorPrice,
                         0, yNow,
                         Brushes.Red, DashStyleHelper.Dash, 2);
                 }
