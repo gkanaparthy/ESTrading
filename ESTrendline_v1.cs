@@ -1420,8 +1420,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 Draw.Line(this, TagUp,
                     false,
-                    CurrentBar - uptrendLine.A.BarIndex, uptrendLine.A.Price,
-                    CurrentBar - uptrendLine.B.BarIndex, uptrendLine.B.Price,
+                    AbsTime(uptrendLine.A.BarIndex), uptrendLine.A.Price,
+                    AbsTime(uptrendLine.B.BarIndex), uptrendLine.B.Price,
                     Brushes.LimeGreen);
             }
 
@@ -1429,8 +1429,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 Draw.Line(this, TagDn,
                     false,
-                    CurrentBar - downtrendLine.A.BarIndex, downtrendLine.A.Price,
-                    CurrentBar - downtrendLine.B.BarIndex, downtrendLine.B.Price,
+                    AbsTime(downtrendLine.A.BarIndex), downtrendLine.A.Price,
+                    AbsTime(downtrendLine.B.BarIndex), downtrendLine.B.Price,
                     Brushes.OrangeRed);
             }
 
@@ -1443,8 +1443,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     Draw.Line(this, TagSafety,
                         false,
-                        CurrentBar - safety.A.BarIndex, safety.A.Price,
-                        CurrentBar - safety.B.BarIndex, safety.B.Price,
+                        AbsTime(safety.A.BarIndex), safety.A.Price,
+                        AbsTime(safety.B.BarIndex), safety.B.Price,
                         Brushes.Red);
                 }
             }
