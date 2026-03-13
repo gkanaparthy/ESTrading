@@ -340,7 +340,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 HTFSlopeThreshold = 0.5;
                 ATRPeriod = 14;
                 MinATRTicks = 2;
-                MaxATRTicks = 16;
+                MaxATRTicks = 40;
                 UseNewsBlackout = true;
                 NewsBlackoutMinutes = 5;
 
@@ -995,8 +995,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (UseHTFFilter)
             {
-                if (dir > 0 && htfBias <= 0) { failReason = "HTF_BIAS_BLOCK_LONG"; return false; }
-                if (dir < 0 && htfBias >= 0) { failReason = "HTF_BIAS_BLOCK_SHORT"; return false; }
+                if (dir > 0 && htfBias <= 0)
+                {
+                    if (EnableLogs) Print($"[RISK] HTF_BIAS_BLOCK_LONG htfBias={htfBias}");
+                    failReason = "HTF_BIAS_BLOCK_LONG";
+                    return false;
+                }
+                if (dir < 0 && htfBias >= 0)
+                {
+                    if (EnableLogs) Print($"[RISK] HTF_BIAS_BLOCK_SHORT htfBias={htfBias}");
+                    failReason = "HTF_BIAS_BLOCK_SHORT";
+                    return false;
+                }
             }
 
             if (!IsVolatilityOk())
@@ -1014,6 +1024,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             // safety line required (hard rule)
             if (safetyLine == null || !safetyLine.IsValid || safetyLine.B.BarIndex <= safetyLine.A.BarIndex)
             {
+                if (EnableLogs)
+                {
+                    string expected = dir > 0 ? "UP" : "DN";
+                    string up = uptrendLine == null ? "null" : $"key={uptrendLine.Key} valid={uptrendLine.IsValid} consumed={uptrendLine.IsConsumed} touches={(uptrendLine.TouchBars != null ? uptrendLine.TouchBars.Count : 0)}";
+                    string dn = downtrendLine == null ? "null" : $"key={downtrendLine.Key} valid={downtrendLine.IsValid} consumed={downtrendLine.IsConsumed} touches={(downtrendLine.TouchBars != null ? downtrendLine.TouchBars.Count : 0)}";
+                    Print($"[RISK] SAFETY_LINE_INVALID expected={expected} safety={(safetyLine==null?"null":safetyLine.Key)} | up={up} | dn={dn}");
+                }
                 failReason = "SAFETY_LINE_INVALID";
                 return false;
             }
@@ -1351,7 +1368,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (double.IsNaN(atrTicks) || atrTicks <= 0)
                 return false;
 
-            return atrTicks >= MinATRTicks && atrTicks <= MaxATRTicks;
+            bool ok = atrTicks >= MinATRTicks && atrTicks <= MaxATRTicks;
+            if (!ok && EnableLogs)
+                Print($"[FILTER] VOLATILITY_FILTER atrTicks={atrTicks:0.0} min={MinATRTicks} max={MaxATRTicks}");
+            return ok;
         }
 
         private bool IsInNewsBlackout()
