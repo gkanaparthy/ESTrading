@@ -350,7 +350,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 MinRiskRewardRatio = 1.5;
                 MaxRiskDollarsPerTrade = 200.0;
-                MaxSafetyStopTicks = 16;
+                MaxSafetyStopTicks = 30;
                 TargetATRMultiplier = 2.0;
 
                 WaitForRetest = true;
@@ -363,7 +363,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SessionEndNoNewEntries = 145500;
 
                 HardStopBufferTicks = 4;
-                HardStopMaxTicks = 20;
+                HardStopMaxTicks = 30;
                 BreakevenBufferTicks = 2;
                 PartialExitPct = 50;
                 PartialLockTicks = 4;
