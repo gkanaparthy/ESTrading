@@ -1112,12 +1112,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             TrendLineModel actionLine = dir > 0 ? downtrendLine : uptrendLine;
             if (actionLine == null)
             {
-                failReason = "NO_ACTION_LINE";
-                return false;
+                // For bounce fallback (no safety line), allow ATR-only target even if the opposite line is missing.
+                bool allowAtrOnlyTarget = isBounce && !RequireSafetyLineForBounce;
+                if (!allowAtrOnlyTarget)
+                {
+                    failReason = "NO_ACTION_LINE";
+                    return false;
+                }
             }
 
             double atrTicks = atr2m[0] / TickSize;
-            double channelHeightTicks = safetyOk
+            double channelHeightTicks = (safetyOk && actionLine != null)
                 ? Math.Abs(actionLine.ValueAtBar(CurrentBar) - safetyLine.ValueAtBar(CurrentBar)) / TickSize
                 : 0.0;
 
