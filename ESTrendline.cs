@@ -94,6 +94,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private readonly List<SwingPoint> pivotHighs = new List<SwingPoint>();
         private readonly List<SwingPoint> pivotLows = new List<SwingPoint>();
 
+        // Persist touch history across trendline object rebuilds.
+        // Keyed by TrendLineModel.Key (UP/DN + anchor bar indices).
+        private readonly Dictionary<string, List<int>> touchLedger = new Dictionary<string, List<int>>();
+
         private TrendLineModel uptrendLine;
         private TrendLineModel downtrendLine;
 
@@ -507,6 +511,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             pendingBreakAnchorPrice = 0;
             pendingBreakSlope = 0;
             consumedLineKeys.Clear();
+            touchLedger.Clear();
 
             pivotHighs.Clear();
             pivotLows.Clear();
@@ -566,7 +571,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (up != null)
             {
                 if (uptrendLine == null || uptrendLine.Key != up.Key)
+                {
+                    RestoreTouches(up);
                     uptrendLine = up;
+                }
             }
             else
             {
@@ -577,7 +585,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (dn != null)
             {
                 if (downtrendLine == null || downtrendLine.Key != dn.Key)
+                {
+                    RestoreTouches(dn);
                     downtrendLine = dn;
+                }
             }
             else
             {
@@ -588,6 +599,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 uptrendLine.IsConsumed = true;
             if (downtrendLine != null && consumedLineKeys.Contains(downtrendLine.Key))
                 downtrendLine.IsConsumed = true;
+        }
+
+        private void RestoreTouches(TrendLineModel line)
+        {
+            if (line == null)
+                return;
+            if (touchLedger.TryGetValue(line.Key, out List<int> bars) && bars != null && bars.Count > 0)
+            {
+                // Copy so modifications don't affect the ledger list reference unexpectedly.
+                line.TouchBars = new List<int>(bars);
+            }
         }
 
         private TrendLineModel BuildUptrendLine()
@@ -710,8 +732,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             line.TouchBars.Add(CurrentBar);
 
+            // Persist touch history keyed by line.Key so we don't reset to touch#1 on object rebuild.
+            if (!touchLedger.TryGetValue(line.Key, out List<int> ledgerBars) || ledgerBars == null)
+            {
+                ledgerBars = new List<int>();
+                touchLedger[line.Key] = ledgerBars;
+            }
+            if (ledgerBars.Count == 0 || ledgerBars[ledgerBars.Count - 1] != CurrentBar)
+                ledgerBars.Add(CurrentBar);
+
             if (EnableLogs)
-                Print($"[TOUCH] {(line.IsUptrend ? "UP" : "DN")} line touch#{line.TouchBars.Count} at bar {CurrentBar}");
+                Print($"[TOUCH] {(line.IsUptrend ? "UP" : "DN")} line key={line.Key} touch#{line.TouchBars.Count} at bar {CurrentBar}");
         }
 
         private void DetectBreakSignal()
