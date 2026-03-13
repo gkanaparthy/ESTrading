@@ -309,6 +309,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "ShowLinesOnChart", GroupName = "7. Debug", Order = 2)]
         public bool ShowLinesOnChart { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "RequireSafetyLineForBounce", GroupName = "4. Risk", Order = 99)]
+        public bool RequireSafetyLineForBounce { get; set; }
         #endregion
 
         #region NinjaScript lifecycle
@@ -368,6 +372,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 EnableLogs = true;
                 ShowLinesOnChart = true;
+
+                RequireSafetyLineForBounce = true;
             }
             else if (State == State.Configure)
             {
@@ -1021,23 +1027,29 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
 
-            // safety line required (hard rule)
-            if (safetyLine == null || !safetyLine.IsValid || safetyLine.B.BarIndex <= safetyLine.A.BarIndex)
+            bool safetyOk = !(safetyLine == null || !safetyLine.IsValid || safetyLine.B.BarIndex <= safetyLine.A.BarIndex);
+
+            // Safety line is a hard rule for breaks. For bounces, allow an ATR-only fallback if configured.
+            if (!safetyOk)
             {
-                if (EnableLogs)
+                bool allowBounceFallback = isBounce && !RequireSafetyLineForBounce;
+                if (!allowBounceFallback)
                 {
-                    string expected = dir > 0 ? "UP" : "DN";
-                    string up = uptrendLine == null ? "null" : $"key={uptrendLine.Key} valid={uptrendLine.IsValid} consumed={uptrendLine.IsConsumed} touches={(uptrendLine.TouchBars != null ? uptrendLine.TouchBars.Count : 0)}";
-                    string dn = downtrendLine == null ? "null" : $"key={downtrendLine.Key} valid={downtrendLine.IsValid} consumed={downtrendLine.IsConsumed} touches={(downtrendLine.TouchBars != null ? downtrendLine.TouchBars.Count : 0)}";
-                    Print($"[RISK] SAFETY_LINE_INVALID expected={expected} safety={(safetyLine==null?"null":safetyLine.Key)} | up={up} | dn={dn}");
+                    if (EnableLogs)
+                    {
+                        string expected = dir > 0 ? "UP" : "DN";
+                        string up = uptrendLine == null ? "null" : $"key={uptrendLine.Key} valid={uptrendLine.IsValid} consumed={uptrendLine.IsConsumed} touches={(uptrendLine.TouchBars != null ? uptrendLine.TouchBars.Count : 0)}";
+                        string dn = downtrendLine == null ? "null" : $"key={downtrendLine.Key} valid={downtrendLine.IsValid} consumed={downtrendLine.IsConsumed} touches={(downtrendLine.TouchBars != null ? downtrendLine.TouchBars.Count : 0)}";
+                        Print($"[RISK] SAFETY_LINE_INVALID expected={expected} safety={(safetyLine==null?"null":safetyLine.Key)} | up={up} | dn={dn}");
+                    }
+                    failReason = "SAFETY_LINE_INVALID";
+                    return false;
                 }
-                failReason = "SAFETY_LINE_INVALID";
-                return false;
             }
 
             // estimate entry at next bar open ~ Close[0]
             double entry = Close[0];
-            double safetyValue = safetyLine.ValueAtBar(CurrentBar);
+            double safetyValue = safetyOk ? safetyLine.ValueAtBar(CurrentBar) : double.NaN;
 
             // logical stop anchor
             double logicalStop;
@@ -1053,6 +1065,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else
             {
+                // break trades anchor stop to safety line (required)
                 logicalStop = safetyValue;
             }
 
@@ -1103,8 +1116,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
 
-            double channelHeightTicks = Math.Abs(actionLine.ValueAtBar(CurrentBar) - safetyLine.ValueAtBar(CurrentBar)) / TickSize;
             double atrTicks = atr2m[0] / TickSize;
+            double channelHeightTicks = safetyOk
+                ? Math.Abs(actionLine.ValueAtBar(CurrentBar) - safetyLine.ValueAtBar(CurrentBar)) / TickSize
+                : 0.0;
+
+            // If safety line is missing (bounce fallback), use ATR-only target.
             targetTicks = Math.Max(channelHeightTicks, atrTicks * TargetATRMultiplier);
             if (targetTicks < 1)
             {
@@ -1130,22 +1147,30 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             int dir = Position.MarketPosition == MarketPosition.Long ? +1 : -1;
             TrendLineModel safety = GetSafetyLineForDir(dir);
-            if (safety == null || !safety.IsValid)
+            bool safetyOk = !(safety == null || !safety.IsValid);
+
+            // If configured, allow bounce trades to continue without a safety line (hard stop + BE + partial only).
+            if (!safetyOk)
             {
-                // Safety line invalid while in trade: flatten immediately
+                bool allowBounceNoSafety = activeIsBounce && !RequireSafetyLineForBounce;
+                if (!allowBounceNoSafety)
+                {
+                    if (EnableLogs)
+                        Print("[EXIT] Safety line missing/invalid while in trade -> flatten");
+                    if (dir > 0) ExitLong("SafetyMissing", activeEntrySignal);
+                    else ExitShort("SafetyMissing", activeEntrySignal);
+                    return;
+                }
                 if (EnableLogs)
-                    Print("[EXIT] Safety line missing/invalid while in trade -> flatten");
-                if (dir > 0) ExitLong("SafetyMissing", activeEntrySignal);
-                else ExitShort("SafetyMissing", activeEntrySignal);
-                return;
+                    Print("[WARN] Safety line missing for bounce trade; managing with hard stop only.");
             }
 
-            double safetyValue = safety.ValueAtBar(CurrentBar);
+            double safetyValue = safetyOk ? safety.ValueAtBar(CurrentBar) : double.NaN;
             double close = Close[0];
             double unrealizedTicks = dir > 0 ? (close - entryPrice) / TickSize : (entryPrice - close) / TickSize;
 
             // 1) Tori primary exit: candle close through safety line
-            if ((dir > 0 && close < safetyValue) || (dir < 0 && close > safetyValue))
+            if (safetyOk && ((dir > 0 && close < safetyValue) || (dir < 0 && close > safetyValue)))
             {
                 if (EnableLogs)
                     Print($"[EXIT] SafetyLineViolation close={close:0.00} safety={safetyValue:0.00}");
@@ -1213,14 +1238,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             // 4) Trail hard stop along safety with buffer (ratchet only)
-            double trailStop = dir > 0
-                ? safetyValue - HardStopBufferTicks * TickSize
-                : safetyValue + HardStopBufferTicks * TickSize;
-
-            if ((dir > 0 && trailStop > currentHardStop) || (dir < 0 && trailStop < currentHardStop) || currentHardStop == 0)
+            if (safetyOk)
             {
-                currentHardStop = trailStop;
-                SetStopForSignal(activeEntrySignal, currentHardStop);
+                double trailStop = dir > 0
+                    ? safetyValue - HardStopBufferTicks * TickSize
+                    : safetyValue + HardStopBufferTicks * TickSize;
+
+                if ((dir > 0 && trailStop > currentHardStop) || (dir < 0 && trailStop < currentHardStop) || currentHardStop == 0)
+                {
+                    currentHardStop = trailStop;
+                    SetStopForSignal(activeEntrySignal, currentHardStop);
+                }
             }
 
             // 5) Session close flatten
