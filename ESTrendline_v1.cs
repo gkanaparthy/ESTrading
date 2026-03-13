@@ -9,6 +9,7 @@ using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.DrawingTools;
 using NinjaTrader.NinjaScript.Indicators;
 using NinjaTrader.Gui;
+using NinjaTrader.Gui.Tools;
 
 
 namespace NinjaTrader.NinjaScript.Strategies
@@ -1343,7 +1344,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             try
             {
-                NinjaTrader.Code.Output.Process(msg, NinjaTrader.Code.PrintTo.OutputTab2);
+                NinjaTrader.Gui.Tools.Output.Process(msg, NinjaTrader.Gui.Tools.PrintTo.OutputTab2);
             }
             catch
             {
