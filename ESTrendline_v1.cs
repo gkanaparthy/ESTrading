@@ -9,7 +9,6 @@ using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.DrawingTools;
 using NinjaTrader.NinjaScript.Indicators;
 using NinjaTrader.Gui;
-using NinjaTrader.Gui.Tools;
 
 
 namespace NinjaTrader.NinjaScript.Strategies
@@ -1340,16 +1339,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         #endregion
 
         #region Filters/helpers
+        // Log helper. Some NT8 builds do not expose OutputTab2 routing APIs.
+        // We keep a single logging path that always compiles: Print() with a strategy prefix.
         private void Log2(string msg)
         {
-            try
-            {
-                NinjaTrader.Gui.Tools.Output.Process(msg, NinjaTrader.Gui.Tools.PrintTo.OutputTab2);
-            }
-            catch
-            {
-                Print(msg);
-            }
+            Print(msg);
         }
 
         private void ProcessClosedTradesForCooldown()
