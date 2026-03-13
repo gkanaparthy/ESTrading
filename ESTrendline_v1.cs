@@ -313,6 +313,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "RequireSafetyLineForBounce", GroupName = "4. Risk", Order = 99)]
         public bool RequireSafetyLineForBounce { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "PreferDominantTrendline", GroupName = "1. Structure", Order = 99)]
+        public bool PreferDominantTrendline { get; set; }
         #endregion
 
         #region NinjaScript lifecycle
@@ -374,6 +378,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ShowLinesOnChart = true;
 
                 RequireSafetyLineForBounce = true;
+                PreferDominantTrendline = true;
             }
             else if (State == State.Configure)
             {
@@ -637,6 +642,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (pivotLows.Count < 2)
                 return null;
 
+            TrendLineModel best = null;
+            double bestScore = double.NegativeInfinity;
+
             for (int b = pivotLows.Count - 1; b >= 1; b--)
             {
                 for (int a = b - 1; a >= 0; a--)
@@ -651,17 +659,31 @@ namespace NinjaTrader.NinjaScript.Strategies
                         continue;
 
                     line.IsValid = ValidateZeroIntersection(line, A.BarIndex, CurrentBar);
-                    if (line.IsValid)
-                        return line;
+                    if (!line.IsValid)
+                        continue;
+
+                    // incorporate persisted touches if we have them
+                    RestoreTouches(line);
+
+                    double score = ScoreTrendlineCandidate(line);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        best = line;
+                    }
                 }
             }
-            return null;
+
+            return best;
         }
 
         private TrendLineModel BuildDowntrendLine()
         {
             if (pivotHighs.Count < 2)
                 return null;
+
+            TrendLineModel best = null;
+            double bestScore = double.NegativeInfinity;
 
             for (int b = pivotHighs.Count - 1; b >= 1; b--)
             {
@@ -677,11 +699,44 @@ namespace NinjaTrader.NinjaScript.Strategies
                         continue;
 
                     line.IsValid = ValidateZeroIntersection(line, A.BarIndex, CurrentBar);
-                    if (line.IsValid)
-                        return line;
+                    if (!line.IsValid)
+                        continue;
+
+                    RestoreTouches(line);
+
+                    double score = ScoreTrendlineCandidate(line);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        best = line;
+                    }
                 }
             }
-            return null;
+
+            return best;
+        }
+
+        private double ScoreTrendlineCandidate(TrendLineModel line)
+        {
+            if (line == null)
+                return double.NegativeInfinity;
+
+            int touches = line.TouchBars != null ? line.TouchBars.Count : 0;
+            int span = Math.Max(0, line.B.BarIndex - line.A.BarIndex);
+            int age = Math.Max(0, CurrentBar - line.A.BarIndex);
+
+            // Base scoring: prefer dominant, established lines.
+            // When PreferDominantTrendline is false, we bias toward recency instead.
+            if (PreferDominantTrendline)
+            {
+                // Touches dominate, then span/age (blue lines tend to win here)
+                return touches * 1000000.0 + span * 1000.0 + age;
+            }
+            else
+            {
+                // Recency bias: prefer newer anchors (red micro lines)
+                return touches * 1000000.0 + span * 1000.0 - age;
+            }
         }
 
         private bool IsSlopeValid(TrendLineModel line)
