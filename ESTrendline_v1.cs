@@ -118,6 +118,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double partialTargetTicks;
         private double currentHardStop;
 
+        // Segment context for the current trade (for parent-line profit taking)
+        private string activeSegmentKey;
+        private string activeParentSegmentKey;
+        private bool parentTpDone;
+
         private int tradesThisSession;
         private int cooldownBarsRemaining;
         private double sessionStartCumProfit;
@@ -524,6 +529,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             breakevenMoved = false;
             partialTaken = false;
             currentHardStop = 0;
+
+            activeSegmentKey = null;
+            activeParentSegmentKey = null;
+            parentTpDone = false;
 
             uptrendLine = null;
             downtrendLine = null;
@@ -1013,6 +1022,22 @@ namespace NinjaTrader.NinjaScript.Strategies
             initialRiskTicks = estRiskTicks;
             partialTargetTicks = targetTicks;
 
+            // segment context: break uses the line that was broken (opposite of direction)
+            TrendLineModel broken = pendingBreakDir > 0 ? downtrendLine : uptrendLine;
+            if (broken != null)
+            {
+                activeSegmentKey = broken.Key;
+                activeParentSegmentKey = pendingBreakDir > 0
+                    ? GetParentSegmentKey(downtrendSegments, activeSegmentKey)
+                    : GetParentSegmentKey(uptrendSegments, activeSegmentKey);
+            }
+            else
+            {
+                activeSegmentKey = null;
+                activeParentSegmentKey = null;
+            }
+            parentTpDone = false;
+
             if (pendingBreakDir > 0)
                 EnterLong(DefaultQuantity, "BreakLong");
             else
@@ -1047,6 +1072,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     initialRiskTicks = estRiskTicks;
                     partialTargetTicks = targetTicks;
+
+                    // segment context (for parent-line TP)
+                    activeSegmentKey = uptrendLine.Key;
+                    activeParentSegmentKey = GetParentSegmentKey(uptrendSegments, activeSegmentKey);
+                    parentTpDone = false;
+
                     EnterLong(DefaultQuantity, "BounceLong");
                     currentHardStop = stopPx;
                     SetStopForSignal("BounceLong", currentHardStop);
@@ -1073,6 +1104,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     initialRiskTicks = estRiskTicks;
                     partialTargetTicks = targetTicks;
+
+                    activeSegmentKey = downtrendLine.Key;
+                    activeParentSegmentKey = GetParentSegmentKey(downtrendSegments, activeSegmentKey);
+                    parentTpDone = false;
+
                     EnterShort(DefaultQuantity, "BounceShort");
                     currentHardStop = stopPx;
                     SetStopForSignal("BounceShort", currentHardStop);
@@ -1112,6 +1148,35 @@ namespace NinjaTrader.NinjaScript.Strategies
         private TrendLineModel GetSafetyLineForDir(int dir)
         {
             return dir > 0 ? uptrendLine : downtrendLine;
+        }
+
+        private string GetParentSegmentKey(List<TrendLineModel> segments, string key)
+        {
+            if (segments == null || segments.Count < 2 || string.IsNullOrEmpty(key))
+                return null;
+
+            for (int i = segments.Count - 1; i >= 0; i--)
+            {
+                if (segments[i] != null && segments[i].Key == key)
+                {
+                    // parent is the previous segment in the chain
+                    int p = i - 1;
+                    if (p >= 0 && segments[p] != null)
+                        return segments[p].Key;
+                    return null;
+                }
+            }
+            return null;
+        }
+
+        private TrendLineModel FindSegmentByKey(List<TrendLineModel> segments, string key)
+        {
+            if (segments == null || string.IsNullOrEmpty(key))
+                return null;
+            for (int i = segments.Count - 1; i >= 0; i--)
+                if (segments[i] != null && segments[i].Key == key)
+                    return segments[i];
+            return null;
         }
 
         private bool PreEntryRiskGate(int dir, bool isBounce, TrendLineModel safetyLine,
@@ -1312,6 +1377,40 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (dir > 0) ExitLong("SafetyLineViolation", activeEntrySignal);
                 else ExitShort("SafetyLineViolation", activeEntrySignal);
                 return;
+            }
+
+            // 1.5) Parent-line take profit (when entry was taken from a continuation segment)
+            if (!parentTpDone && !string.IsNullOrEmpty(activeParentSegmentKey))
+            {
+                TrendLineModel parent = dir > 0
+                    ? FindSegmentByKey(uptrendSegments, activeParentSegmentKey)
+                    : FindSegmentByKey(downtrendSegments, activeParentSegmentKey);
+
+                if (parent != null && parent.IsValid)
+                {
+                    double parentLv = parent.ValueAtBar(CurrentBar);
+                    bool hit = dir > 0 ? High[0] >= parentLv : Low[0] <= parentLv;
+                    if (hit)
+                    {
+                        if (Position.Quantity >= 2)
+                        {
+                            int qtyToExit = 1;
+                            if (dir > 0) ExitLong(qtyToExit, "ParentTP", activeEntrySignal);
+                            else ExitShort(qtyToExit, "ParentTP", activeEntrySignal);
+                            if (EnableLogs)
+                                Log2($"[TP] ParentTP partial qty={qtyToExit} parent={parentLv:0.00} key={activeParentSegmentKey}");
+                        }
+                        else
+                        {
+                            if (dir > 0) ExitLong("ParentTP", activeEntrySignal);
+                            else ExitShort("ParentTP", activeEntrySignal);
+                            if (EnableLogs)
+                                Log2($"[TP] ParentTP full parent={parentLv:0.00} key={activeParentSegmentKey}");
+                        }
+
+                        parentTpDone = true;
+                    }
+                }
             }
 
             // 2) Move hard stop to breakeven at 1:1
