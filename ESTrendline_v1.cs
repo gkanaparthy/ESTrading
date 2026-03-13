@@ -97,6 +97,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private TrendLineModel uptrendLine;
         private TrendLineModel downtrendLine;
 
+        // Trendline chaining (A->B, B->C, C->D...). We keep all active segments for now.
+        private readonly List<TrendLineModel> uptrendSegments = new List<TrendLineModel>();
+        private readonly List<TrendLineModel> downtrendSegments = new List<TrendLineModel>();
+
         private int htfBias; // +1 bull, -1 bear, 0 neutral
 
         private int pendingBreakDir; // +1 long, -1 short, 0 none
@@ -533,6 +537,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             pivotHighs.Clear();
             pivotLows.Clear();
+            uptrendSegments.Clear();
+            downtrendSegments.Clear();
         }
 
         private void DetectConfirmedSwing()
@@ -561,10 +567,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             if (isPivotHigh)
-                AddSwing(pivotHighs, new SwingPoint(i, candidateHigh, AbsTime(i), true));
+            {
+                var sp = new SwingPoint(i, candidateHigh, AbsTime(i), true);
+                AddSwing(pivotHighs, sp);
+                TryChainDowntrend(sp);
+            }
 
             if (isPivotLow)
-                AddSwing(pivotLows, new SwingPoint(i, candidateLow, AbsTime(i), false));
+            {
+                var sp = new SwingPoint(i, candidateLow, AbsTime(i), false);
+                AddSwing(pivotLows, sp);
+                TryChainUptrend(sp);
+            }
         }
 
         private void AddSwing(List<SwingPoint> list, SwingPoint swing)
@@ -585,15 +599,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void RebuildTrendlines()
         {
-            // Build candidates
-            TrendLineModel up = BuildUptrendLine();
-            TrendLineModel dn = BuildDowntrendLine();
+            // Remove invalidated chained segments (body-cross rule).
+            PruneInvalidSegments();
 
-            // Restore persisted touches so selection can consider validation history.
+            // Primary tradable rays: latest valid chained segment if available, else fall back to scored search.
+            TrendLineModel up = uptrendSegments.Count > 0 ? uptrendSegments[uptrendSegments.Count - 1] : BuildUptrendLine();
+            TrendLineModel dn = downtrendSegments.Count > 0 ? downtrendSegments[downtrendSegments.Count - 1] : BuildDowntrendLine();
+
             RestoreTouches(up);
             RestoreTouches(dn);
 
-            // Stability/hysteresis: do not constantly switch lines unless the new candidate is materially better.
             uptrendLine = ChooseStableLine(uptrendLine, up);
             downtrendLine = ChooseStableLine(downtrendLine, dn);
 
@@ -731,18 +746,71 @@ namespace NinjaTrader.NinjaScript.Strategies
             int span = Math.Max(0, line.B.BarIndex - line.A.BarIndex);
             int age = Math.Max(0, CurrentBar - line.A.BarIndex);
 
-            // Base scoring: prefer dominant, established lines.
-            // When PreferDominantTrendline is false, we bias toward recency instead.
             if (PreferDominantTrendline)
-            {
-                // Touches dominate, then span/age (blue lines tend to win here)
                 return touches * 1000000.0 + span * 1000.0 + age;
-            }
-            else
-            {
-                // Recency bias: prefer newer anchors (red micro lines)
-                return touches * 1000000.0 + span * 1000.0 - age;
-            }
+            return touches * 1000000.0 + span * 1000.0 - age;
+        }
+
+        private void TryChainDowntrend(SwingPoint newHigh)
+        {
+            // Need at least one prior confirmed pivot high.
+            if (pivotHighs.Count < 2)
+                return;
+
+            SwingPoint prev = pivotHighs[pivotHighs.Count - 2];
+            SwingPoint cur = newHigh;
+
+            // Downtrend continuation requires lower high.
+            if (cur.Price >= prev.Price)
+                return;
+
+            TrendLineModel seg = new TrendLineModel(false, prev, cur);
+            if (!IsSlopeValid(seg))
+                return;
+
+            seg.IsValid = ValidateZeroIntersection(seg, prev.BarIndex, CurrentBar);
+            if (!seg.IsValid)
+                return;
+
+            RestoreTouches(seg);
+            downtrendSegments.Add(seg);
+            if (EnableLogs)
+                Log2($"[CHAIN] DN seg {prev.BarIndex}->{cur.BarIndex} key={seg.Key}");
+        }
+
+        private void TryChainUptrend(SwingPoint newLow)
+        {
+            if (pivotLows.Count < 2)
+                return;
+
+            SwingPoint prev = pivotLows[pivotLows.Count - 2];
+            SwingPoint cur = newLow;
+
+            // Uptrend continuation requires higher low.
+            if (cur.Price <= prev.Price)
+                return;
+
+            TrendLineModel seg = new TrendLineModel(true, prev, cur);
+            if (!IsSlopeValid(seg))
+                return;
+
+            seg.IsValid = ValidateZeroIntersection(seg, prev.BarIndex, CurrentBar);
+            if (!seg.IsValid)
+                return;
+
+            RestoreTouches(seg);
+            uptrendSegments.Add(seg);
+            if (EnableLogs)
+                Log2($"[CHAIN] UP seg {prev.BarIndex}->{cur.BarIndex} key={seg.Key}");
+        }
+
+        private void PruneInvalidSegments()
+        {
+            // Remove any segment that is invalidated by body-cross on the current bar.
+            if (uptrendSegments.Count > 0)
+                uptrendSegments.RemoveAll(l => l == null || !ValidateZeroIntersection(l, CurrentBar, CurrentBar));
+            if (downtrendSegments.Count > 0)
+                downtrendSegments.RemoveAll(l => l == null || !ValidateZeroIntersection(l, CurrentBar, CurrentBar));
         }
 
         private bool IsSlopeValid(TrendLineModel line)
@@ -765,6 +833,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 downtrendLine.IsValid = IsSlopeValid(downtrendLine) && ValidateZeroIntersection(downtrendLine, downtrendLine.A.BarIndex, CurrentBar);
         }
 
+        // Invalidation rule (Tori-style): a line is invalid if it crosses the candle BODY.
+        // Applies to any line we draw (up or down). Strict/inclusive: touching body edge counts as invalid.
         private bool ValidateZeroIntersection(TrendLineModel line, int fromBar, int toBar)
         {
             if (line == null)
@@ -775,17 +845,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             for (int b = start; b <= end; b++)
             {
                 double lv = line.ValueAtBar(b);
-                double cl = AbsClose(b);
-                if (line.IsUptrend)
-                {
-                    if (cl < lv - TickSize * 0.01)
-                        return false;
-                }
-                else
-                {
-                    if (cl > lv + TickSize * 0.01)
-                        return false;
-                }
+                double o = AbsOpen(b);
+                double c = AbsClose(b);
+                double bodyLow = Math.Min(o, c);
+                double bodyHigh = Math.Max(o, c);
+
+                if (lv >= bodyLow && lv <= bodyHigh)
+                    return false;
             }
             return true;
         }
@@ -1565,6 +1631,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             int rel = ToRel(absBar);
             if (rel < 0 || rel > CurrentBar) return double.NaN;
             return Low[rel];
+        }
+
+        private double AbsOpen(int absBar)
+        {
+            int rel = ToRel(absBar);
+            if (rel < 0 || rel > CurrentBar) return double.NaN;
+            return Open[rel];
         }
 
         private double AbsClose(int absBar)
