@@ -124,11 +124,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool activeParentIsUpSegment; // true = parent in uptrendSegments, false = downtrendSegments
         private bool parentTpDone;
 
-        // Entry context (Action/Safety) persisted for stop and trade management
-        private string activeActionLineKey;
-        private string activeSafetyLineKey;
-        private bool activeSafetyIsUpSegment; // true => lookup safety in uptrend segments/line, false => downtrend
-
         private int tradesThisSession;
         private int cooldownBarsRemaining;
         private double sessionStartCumProfit;
@@ -544,10 +539,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             activeParentSegmentKey = null;
             activeParentIsUpSegment = false;
             parentTpDone = false;
-
-            activeActionLineKey = null;
-            activeSafetyLineKey = null;
-            activeSafetyIsUpSegment = false;
 
             uptrendLine = null;
             downtrendLine = null;
@@ -1079,21 +1070,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             parentTpDone = false;
 
-            // Persist action/safety context (BreakLong action=DN, safety=UP; BreakShort action=UP, safety=DN)
             if (pendingBreakDir > 0)
-            {
-                activeActionLineKey = downtrendLine != null ? downtrendLine.Key : null;
-                activeSafetyLineKey = uptrendLine != null ? uptrendLine.Key : null;
-                activeSafetyIsUpSegment = true;
                 EnterLong(DefaultQuantity, "BreakLong");
-            }
             else
-            {
-                activeActionLineKey = uptrendLine != null ? uptrendLine.Key : null;
-                activeSafetyLineKey = downtrendLine != null ? downtrendLine.Key : null;
-                activeSafetyIsUpSegment = false;
                 EnterShort(DefaultQuantity, "BreakShort");
-            }
 
             submittedEntryThisBar = true;
 
@@ -1102,11 +1082,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             SetStopForSignal(pendingBreakDir > 0 ? "BreakLong" : "BreakShort", currentHardStop);
 
             if (EnableLogs)
-            {
-                Log2($"[ENTRY_CTX] mode=Break{mode} action={activeActionLineKey ?? "null"} safety={activeSafetyLineKey ?? "null"} dir={(pendingBreakDir > 0 ? "LONG" : "SHORT")}");
-                Log2($"[STOP_SRC] safetyLine={activeSafetyLineKey ?? "null"} logical={(GetSafetyLineForDir(pendingBreakDir) != null ? GetSafetyLineForDir(pendingBreakDir).ValueAtBar(CurrentBar).ToString("0.00") : "na")} hard={stopPx:0.00}");
                 Log2($"[ENTRY-ARMED] Break {mode} dir={(pendingBreakDir > 0 ? "LONG" : "SHORT")}, riskTicks={estRiskTicks:0.0}, rr={rr:0.00}, stop={stopPx:0.00}");
-            }
 
             ClearPendingBreak();
         }
@@ -1135,11 +1111,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     activeParentIsUpSegment = true;
                     parentTpDone = false;
 
-                    // BounceLong: action=UP, safety=DN
-                    activeActionLineKey = uptrendLine != null ? uptrendLine.Key : null;
-                    activeSafetyLineKey = downtrendLine != null ? downtrendLine.Key : null;
-                    activeSafetyIsUpSegment = false;
-
                     EnterLong(DefaultQuantity, "BounceLong");
                     currentHardStop = stopPx;
                     SetStopForSignal("BounceLong", currentHardStop);
@@ -1148,10 +1119,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     submittedEntryThisBar = true;
 
                     if (EnableLogs)
-                    {
-                        Log2($"[ENTRY_CTX] mode=Bounce action={activeActionLineKey ?? "null"} safety={activeSafetyLineKey ?? "null"} dir=LONG");
                         Log2($"[ENTRY-ARMED] Bounce LONG riskTicks={estRiskTicks:0.0}, rr={rr:0.00}, stop={stopPx:0.00}");
-                    }
 
                     return;
                 }
@@ -1175,11 +1143,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     activeParentIsUpSegment = false;
                     parentTpDone = false;
 
-                    // BounceShort: action=DN, safety=UP
-                    activeActionLineKey = downtrendLine != null ? downtrendLine.Key : null;
-                    activeSafetyLineKey = uptrendLine != null ? uptrendLine.Key : null;
-                    activeSafetyIsUpSegment = true;
-
                     EnterShort(DefaultQuantity, "BounceShort");
                     currentHardStop = stopPx;
                     SetStopForSignal("BounceShort", currentHardStop);
@@ -1188,10 +1151,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     submittedEntryThisBar = true;
 
                     if (EnableLogs)
-                    {
-                        Log2($"[ENTRY_CTX] mode=Bounce action={activeActionLineKey ?? "null"} safety={activeSafetyLineKey ?? "null"} dir=SHORT");
                         Log2($"[ENTRY-ARMED] Bounce SHORT riskTicks={estRiskTicks:0.0}, rr={rr:0.00}, stop={stopPx:0.00}");
-                    }
 
                     return;
                 }
@@ -1253,27 +1213,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             return null;
         }
 
-        private TrendLineModel ResolveActiveSafetyLine(int dir)
-        {
-            // Prefer persisted entry context first.
-            if (!string.IsNullOrEmpty(activeSafetyLineKey))
-            {
-                TrendLineModel seg = activeSafetyIsUpSegment
-                    ? FindSegmentByKey(uptrendSegments, activeSafetyLineKey)
-                    : FindSegmentByKey(downtrendSegments, activeSafetyLineKey);
-                if (seg != null && seg.IsValid)
-                    return seg;
-
-                if (activeSafetyIsUpSegment && uptrendLine != null && uptrendLine.Key == activeSafetyLineKey && uptrendLine.IsValid)
-                    return uptrendLine;
-                if (!activeSafetyIsUpSegment && downtrendLine != null && downtrendLine.Key == activeSafetyLineKey && downtrendLine.IsValid)
-                    return downtrendLine;
-            }
-
-            // Fallback to directional safety line.
-            return GetSafetyLineForDir(dir);
-        }
-
         private bool PreEntryRiskGate(int dir, bool isBounce, TrendLineModel safetyLine,
             out double estRiskTicks, out double rr, out double hardStopPrice, out double targetTicks, out string failReason)
         {
@@ -1319,26 +1258,45 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             bool safetyOk = !(safetyLine == null || !safetyLine.IsValid || safetyLine.B.BarIndex <= safetyLine.A.BarIndex);
 
-            // Safety line is a hard requirement for all entries.
+            // Safety line is a hard rule for breaks. For bounces, allow an ATR-only fallback if configured.
             if (!safetyOk)
             {
-                if (EnableLogs)
+                bool allowBounceFallback = isBounce && !RequireSafetyLineForBounce;
+                if (!allowBounceFallback)
                 {
-                    string expected = dir > 0 ? "UP" : "DN";
-                    string up = uptrendLine == null ? "null" : $"key={uptrendLine.Key} valid={uptrendLine.IsValid} consumed={uptrendLine.IsConsumed} touches={(uptrendLine.TouchBars != null ? uptrendLine.TouchBars.Count : 0)}";
-                    string dn = downtrendLine == null ? "null" : $"key={downtrendLine.Key} valid={downtrendLine.IsValid} consumed={downtrendLine.IsConsumed} touches={(downtrendLine.TouchBars != null ? downtrendLine.TouchBars.Count : 0)}";
-                    Log2($"[RISK] SAFETY_LINE_INVALID expected={expected} safety={(safetyLine==null?"null":safetyLine.Key)} | up={up} | dn={dn}");
+                    if (EnableLogs)
+                    {
+                        string expected = dir > 0 ? "UP" : "DN";
+                        string up = uptrendLine == null ? "null" : $"key={uptrendLine.Key} valid={uptrendLine.IsValid} consumed={uptrendLine.IsConsumed} touches={(uptrendLine.TouchBars != null ? uptrendLine.TouchBars.Count : 0)}";
+                        string dn = downtrendLine == null ? "null" : $"key={downtrendLine.Key} valid={downtrendLine.IsValid} consumed={downtrendLine.IsConsumed} touches={(downtrendLine.TouchBars != null ? downtrendLine.TouchBars.Count : 0)}";
+                        Log2($"[RISK] SAFETY_LINE_INVALID expected={expected} safety={(safetyLine==null?"null":safetyLine.Key)} | up={up} | dn={dn}");
+                    }
+                    failReason = "SAFETY_LINE_INVALID";
+                    return false;
                 }
-                failReason = "SAFETY_LINE_INVALID";
-                return false;
             }
 
             // estimate entry at next bar open ~ Close[0]
             double entry = Close[0];
-            double safetyValue = safetyLine.ValueAtBar(CurrentBar);
+            double safetyValue = safetyOk ? safetyLine.ValueAtBar(CurrentBar) : double.NaN;
 
-            // logical stop anchor is always the safety line
-            double logicalStop = safetyValue;
+            // logical stop anchor
+            double logicalStop;
+            if (isBounce)
+            {
+                // bounce stop uses action line + buffer
+                TrendLineModel action = dir > 0 ? uptrendLine : downtrendLine;
+                if (action == null || !action.IsValid) { failReason = "ACTION_LINE_INVALID"; return false; }
+                double actionVal = action.ValueAtBar(CurrentBar);
+                logicalStop = dir > 0
+                    ? actionVal - BounceStopBufferTicks * TickSize
+                    : actionVal + BounceStopBufferTicks * TickSize;
+            }
+            else
+            {
+                // break trades anchor stop to safety line (required)
+                logicalStop = safetyValue;
+            }
 
             // hard stop = buffered beyond logical stop
             hardStopPrice = dir > 0
@@ -1422,7 +1380,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
 
             int dir = Position.MarketPosition == MarketPosition.Long ? +1 : -1;
-            TrendLineModel safety = ResolveActiveSafetyLine(dir);
+            TrendLineModel safety = GetSafetyLineForDir(dir);
             bool safetyOk = !(safety == null || !safety.IsValid);
 
             // If configured, allow bounce trades to continue without a safety line (hard stop + BE + partial only).
