@@ -1343,7 +1343,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         // We keep a single logging path that always compiles: Print() with a strategy prefix.
         private void Log2(string msg)
         {
-            Print(msg);
+            // Prefix so Output window filtering is easy even when multiple strategies are running.
+            Print($"[ESTrendline_v1] {msg}");
         }
 
         private void ProcessClosedTradesForCooldown()
