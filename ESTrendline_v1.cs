@@ -151,6 +151,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int TouchZoneTicks { get; set; }
 
         [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "TouchCountToleranceTicks", GroupName = "2. Touches", Order = 2)]
+        public int TouchCountToleranceTicks { get; set; }
+
+        [NinjaScriptProperty]
         [Range(1, 50)]
         [Display(Name = "MinBarsBetweenTouches", GroupName = "2. Touches", Order = 2)]
         public int MinBarsBetweenTouches { get; set; }
@@ -338,6 +343,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MinSwingDiffTicks = 4;
 
                 TouchZoneTicks = 4;
+                TouchCountToleranceTicks = 4;
                 MinBarsBetweenTouches = 6;
                 MinTouchCount = 2;
                 MinBarsFromFirstTouch = 10;
@@ -790,10 +796,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
 
             double lv = line.ValueAtBar(CurrentBar);
-            double zone = TouchZoneTicks * TickSize;
+
+            // Touch counting tolerance (used to build confidence/MinTouchCount).
+            // This is intentionally looser than entry logic. A "touch" is counted if price comes within tolerance ticks of the line.
+            double tol = TouchCountToleranceTicks * TickSize;
             bool touch = line.IsUptrend
-                ? (Low[0] <= lv + zone && Close[0] >= lv)
-                : (High[0] >= lv - zone && Close[0] <= lv);
+                ? (Low[0] <= lv + tol)
+                : (High[0] >= lv - tol);
 
             if (!touch)
                 return;
