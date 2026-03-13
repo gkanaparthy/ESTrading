@@ -1418,21 +1418,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (uptrendLine != null)
             {
-                int upStartBarsAgo = CurrentBar - uptrendLine.A.BarIndex;
-                int upEndBarsAgo = CurrentBar - uptrendLine.B.BarIndex;
                 Draw.Line(this, TagUp, false,
-                    upStartBarsAgo, uptrendLine.A.Price,
-                    upEndBarsAgo, uptrendLine.B.Price,
+                    CurrentBar - uptrendLine.A.BarIndex, uptrendLine.A.Price,
+                    CurrentBar - uptrendLine.B.BarIndex, uptrendLine.B.Price,
                     Brushes.LimeGreen);
             }
 
             if (downtrendLine != null)
             {
-                int dnStartBarsAgo = CurrentBar - downtrendLine.A.BarIndex;
-                int dnEndBarsAgo = CurrentBar - downtrendLine.B.BarIndex;
                 Draw.Line(this, TagDn, false,
-                    dnStartBarsAgo, downtrendLine.A.Price,
-                    dnEndBarsAgo, downtrendLine.B.Price,
+                    CurrentBar - downtrendLine.A.BarIndex, downtrendLine.A.Price,
+                    CurrentBar - downtrendLine.B.BarIndex, downtrendLine.B.Price,
                     Brushes.OrangeRed);
             }
 
@@ -1443,11 +1439,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TrendLineModel safety = GetSafetyLineForDir(dir);
                 if (safety != null)
                 {
-                    int sStartBarsAgo = CurrentBar - safety.A.BarIndex;
-                    int sEndBarsAgo = CurrentBar - safety.B.BarIndex;
                     Draw.Line(this, TagSafety, false,
-                        sStartBarsAgo, safety.A.Price,
-                        sEndBarsAgo, safety.B.Price,
+                        CurrentBar - safety.A.BarIndex, safety.A.Price,
+                        CurrentBar - safety.B.BarIndex, safety.B.Price,
                         Brushes.Red);
                 }
             }
