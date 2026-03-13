@@ -8,6 +8,7 @@ using NinjaTrader.Data;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.DrawingTools;
 using NinjaTrader.NinjaScript.Indicators;
+using NinjaTrader.Gui.Tools;
 
 namespace NinjaTrader.NinjaScript.Strategies
 {
@@ -1421,7 +1422,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Draw.Line(this, TagUp, false,
                     CurrentBar - uptrendLine.A.BarIndex, uptrendLine.A.Price,
                     CurrentBar - uptrendLine.B.BarIndex, uptrendLine.B.Price,
-                    Brushes.LimeGreen, DashStyleHelper.Solid, 2);
+                    Brushes.LimeGreen, NinjaTrader.Gui.Tools.DashStyleHelper.Solid, 2);
             }
 
             if (downtrendLine != null)
@@ -1429,7 +1430,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Draw.Line(this, TagDn, false,
                     CurrentBar - downtrendLine.A.BarIndex, downtrendLine.A.Price,
                     CurrentBar - downtrendLine.B.BarIndex, downtrendLine.B.Price,
-                    Brushes.OrangeRed, DashStyleHelper.Solid, 2);
+                    Brushes.OrangeRed, NinjaTrader.Gui.Tools.DashStyleHelper.Solid, 2);
             }
 
             // safety line highlight while in trade
@@ -1442,7 +1443,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     Draw.Line(this, TagSafety, false,
                         CurrentBar - safety.A.BarIndex, safety.A.Price,
                         CurrentBar - safety.B.BarIndex, safety.B.Price,
-                        Brushes.Red, DashStyleHelper.Dash, 2);
+                        Brushes.Red, NinjaTrader.Gui.Tools.DashStyleHelper.Dash, 2);
                 }
             }
         }
