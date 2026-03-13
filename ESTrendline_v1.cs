@@ -1573,17 +1573,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (uptrendLine != null)
             {
+                // Draw as a ray: anchor at A and extend to current bar using projected value.
+                double yNow = uptrendLine.ValueAtBar(CurrentBar);
                 Draw.Line(this, TagUp, false,
                     CurrentBar - uptrendLine.A.BarIndex, uptrendLine.A.Price,
-                    CurrentBar - uptrendLine.B.BarIndex, uptrendLine.B.Price,
+                    0, yNow,
                     Brushes.LimeGreen, DashStyleHelper.Solid, 2);
             }
 
             if (downtrendLine != null)
             {
+                double yNow = downtrendLine.ValueAtBar(CurrentBar);
                 Draw.Line(this, TagDn, false,
                     CurrentBar - downtrendLine.A.BarIndex, downtrendLine.A.Price,
-                    CurrentBar - downtrendLine.B.BarIndex, downtrendLine.B.Price,
+                    0, yNow,
                     Brushes.OrangeRed, DashStyleHelper.Solid, 2);
             }
 
@@ -1594,9 +1597,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TrendLineModel safety = GetSafetyLineForDir(dir);
                 if (safety != null)
                 {
+                    double yNow = safety.ValueAtBar(CurrentBar);
                     Draw.Line(this, TagSafety, false,
                         CurrentBar - safety.A.BarIndex, safety.A.Price,
-                        CurrentBar - safety.B.BarIndex, safety.B.Price,
+                        0, yNow,
                         Brushes.Red, DashStyleHelper.Dash, 2);
                 }
             }
