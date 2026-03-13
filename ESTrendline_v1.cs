@@ -1418,18 +1418,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (uptrendLine != null)
             {
-                Draw.Line(this, TagUp, false,
+                Draw.Line(this, TagUp,
+                    false,
                     CurrentBar - uptrendLine.A.BarIndex, uptrendLine.A.Price,
                     CurrentBar - uptrendLine.B.BarIndex, uptrendLine.B.Price,
-                    Brushes.LimeGreen, 2);
+                    Brushes.LimeGreen);
             }
 
             if (downtrendLine != null)
             {
-                Draw.Line(this, TagDn, false,
+                Draw.Line(this, TagDn,
+                    false,
                     CurrentBar - downtrendLine.A.BarIndex, downtrendLine.A.Price,
                     CurrentBar - downtrendLine.B.BarIndex, downtrendLine.B.Price,
-                    Brushes.OrangeRed, 2);
+                    Brushes.OrangeRed);
             }
 
             // safety line highlight while in trade
@@ -1439,10 +1441,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TrendLineModel safety = GetSafetyLineForDir(dir);
                 if (safety != null)
                 {
-                    Draw.Line(this, TagSafety, false,
+                    Draw.Line(this, TagSafety,
+                        false,
                         CurrentBar - safety.A.BarIndex, safety.A.Price,
                         CurrentBar - safety.B.BarIndex, safety.B.Price,
-                        Brushes.Red, 2);
+                        Brushes.Red);
                 }
             }
         }
