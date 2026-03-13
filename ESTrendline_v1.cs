@@ -355,8 +355,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MaxTradesPerSession = 2;
                 CooldownBarsAfterLoss = 5;
                 BounceStopBufferTicks = 2;
-                SessionStart = 93000;
-                SessionEndNoNewEntries = 144500;
+                SessionStart = 83000;
+                SessionEndNoNewEntries = 145500;
 
                 HardStopBufferTicks = 4;
                 HardStopMaxTicks = 20;
