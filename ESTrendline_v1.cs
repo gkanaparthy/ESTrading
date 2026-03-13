@@ -83,6 +83,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const string TagUp = "ESTrendline_v1.UpTrend";
         private const string TagDn = "ESTrendline_v1.DownTrend";
         private const string TagSafety = "ESTrendline_v1.Safety";
+        private const string TagUpCont = "ESTrendline_v1.UpCont";
+        private const string TagDnCont = "ESTrendline_v1.DownCont";
+        private const string TagUpParent = "ESTrendline_v1.UpParent";
+        private const string TagDnParent = "ESTrendline_v1.DownParent";
         #endregion
 
         #region Indicators
@@ -325,6 +329,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool ShowLinesOnChart { get; set; }
 
         [NinjaScriptProperty]
+        [Display(Name = "ShowContinuationLines", GroupName = "7. Debug", Order = 3)]
+        public bool ShowContinuationLines { get; set; }
+
+        [NinjaScriptProperty]
         [Display(Name = "RequireSafetyLineForBounce", GroupName = "4. Risk", Order = 99)]
         public bool RequireSafetyLineForBounce { get; set; }
 
@@ -391,6 +399,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 EnableLogs = true;
                 ShowLinesOnChart = true;
+                ShowContinuationLines = true;
 
                 RequireSafetyLineForBounce = true;
                 PreferDominantTrendline = true;
@@ -578,32 +587,33 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (isPivotHigh)
             {
                 var sp = new SwingPoint(i, candidateHigh, AbsTime(i), true);
-                AddSwing(pivotHighs, sp);
-                TryChainDowntrend(sp);
+                if (AddSwing(pivotHighs, sp))
+                    TryChainDowntrend(sp);
             }
 
             if (isPivotLow)
             {
                 var sp = new SwingPoint(i, candidateLow, AbsTime(i), false);
-                AddSwing(pivotLows, sp);
-                TryChainUptrend(sp);
+                if (AddSwing(pivotLows, sp))
+                    TryChainUptrend(sp);
             }
         }
 
-        private void AddSwing(List<SwingPoint> list, SwingPoint swing)
+        private bool AddSwing(List<SwingPoint> list, SwingPoint swing)
         {
             if (list.Count > 0)
             {
                 SwingPoint last = list[list.Count - 1];
                 if (Math.Abs((swing.Price - last.Price) / TickSize) < MinSwingDiffTicks)
-                    return;
+                    return false;
                 if (swing.BarIndex <= last.BarIndex)
-                    return;
+                    return false;
             }
 
             list.Add(swing);
             while (list.Count > MaxSwingLookback)
                 list.RemoveAt(0);
+            return true;
         }
 
         private void RebuildTrendlines()
@@ -612,8 +622,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             PruneInvalidSegments();
 
             // Primary tradable rays: latest valid chained segment if available, else fall back to scored search.
-            TrendLineModel up = uptrendSegments.Count > 0 ? uptrendSegments[uptrendSegments.Count - 1] : BuildUptrendLine();
-            TrendLineModel dn = downtrendSegments.Count > 0 ? downtrendSegments[downtrendSegments.Count - 1] : BuildDowntrendLine();
+            TrendLineModel up = GetLatestValidSegment(uptrendSegments) ?? BuildUptrendLine();
+            TrendLineModel dn = GetLatestValidSegment(downtrendSegments) ?? BuildDowntrendLine();
 
             RestoreTouches(up);
             RestoreTouches(dn);
@@ -782,9 +792,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
 
             RestoreTouches(seg);
-            downtrendSegments.Add(seg);
-            if (EnableLogs)
-                Log2($"[CHAIN] DN seg {prev.BarIndex}->{cur.BarIndex} key={seg.Key}");
+            if (downtrendSegments.Count == 0 || downtrendSegments[downtrendSegments.Count - 1].Key != seg.Key)
+            {
+                downtrendSegments.Add(seg);
+                while (downtrendSegments.Count > MaxSwingLookback)
+                    downtrendSegments.RemoveAt(0);
+                if (EnableLogs)
+                    Log2($"[CHAIN] DN seg {prev.BarIndex}->{cur.BarIndex} key={seg.Key}");
+            }
         }
 
         private void TryChainUptrend(SwingPoint newLow)
@@ -808,9 +823,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
 
             RestoreTouches(seg);
-            uptrendSegments.Add(seg);
-            if (EnableLogs)
-                Log2($"[CHAIN] UP seg {prev.BarIndex}->{cur.BarIndex} key={seg.Key}");
+            if (uptrendSegments.Count == 0 || uptrendSegments[uptrendSegments.Count - 1].Key != seg.Key)
+            {
+                uptrendSegments.Add(seg);
+                while (uptrendSegments.Count > MaxSwingLookback)
+                    uptrendSegments.RemoveAt(0);
+                if (EnableLogs)
+                    Log2($"[CHAIN] UP seg {prev.BarIndex}->{cur.BarIndex} key={seg.Key}");
+            }
         }
 
         private void PruneInvalidSegments()
@@ -820,6 +840,35 @@ namespace NinjaTrader.NinjaScript.Strategies
                 uptrendSegments.RemoveAll(l => l == null || !ValidateZeroIntersection(l, CurrentBar, CurrentBar));
             if (downtrendSegments.Count > 0)
                 downtrendSegments.RemoveAll(l => l == null || !ValidateZeroIntersection(l, CurrentBar, CurrentBar));
+        }
+
+        private TrendLineModel GetLatestValidSegment(List<TrendLineModel> segments)
+        {
+            if (segments == null || segments.Count == 0)
+                return null;
+            for (int i = segments.Count - 1; i >= 0; i--)
+            {
+                TrendLineModel s = segments[i];
+                if (s != null && s.IsValid && !s.IsConsumed)
+                    return s;
+            }
+            return null;
+        }
+
+        private TrendLineModel GetParentSegment(List<TrendLineModel> segments, TrendLineModel latest)
+        {
+            if (segments == null || latest == null)
+                return null;
+            for (int i = segments.Count - 1; i >= 0; i--)
+            {
+                TrendLineModel s = segments[i];
+                if (s == null || !s.IsValid || s.IsConsumed)
+                    continue;
+                // continuity parent: parent.B == latest.A
+                if (s.B.BarIndex == latest.A.BarIndex)
+                    return s;
+            }
+            return null;
         }
 
         private bool IsSlopeValid(TrendLineModel line)
@@ -1777,6 +1826,55 @@ namespace NinjaTrader.NinjaScript.Strategies
                     CurrentBar - downtrendLine.A.BarIndex, downtrendLine.A.Price,
                     0, yNow,
                     Brushes.OrangeRed, DashStyleHelper.Solid, 2);
+            }
+
+            if (ShowContinuationLines)
+            {
+                TrendLineModel upCont = GetLatestValidSegment(uptrendSegments);
+                TrendLineModel dnCont = GetLatestValidSegment(downtrendSegments);
+                TrendLineModel upParent = GetParentSegment(uptrendSegments, upCont);
+                TrendLineModel dnParent = GetParentSegment(downtrendSegments, dnCont);
+
+                if (upParent != null)
+                {
+                    double yNow = upParent.ValueAtBar(CurrentBar);
+                    Draw.Line(this, TagUpParent, false,
+                        CurrentBar - upParent.A.BarIndex, upParent.A.Price,
+                        0, yNow,
+                        Brushes.LightGreen, DashStyleHelper.Dash, 1);
+                }
+                if (upCont != null)
+                {
+                    double yNow = upCont.ValueAtBar(CurrentBar);
+                    Draw.Line(this, TagUpCont, false,
+                        CurrentBar - upCont.A.BarIndex, upCont.A.Price,
+                        0, yNow,
+                        Brushes.LimeGreen, DashStyleHelper.Solid, 2);
+                }
+
+                if (dnParent != null)
+                {
+                    double yNow = dnParent.ValueAtBar(CurrentBar);
+                    Draw.Line(this, TagDnParent, false,
+                        CurrentBar - dnParent.A.BarIndex, dnParent.A.Price,
+                        0, yNow,
+                        Brushes.Orange, DashStyleHelper.Dash, 1);
+                }
+                if (dnCont != null)
+                {
+                    double yNow = dnCont.ValueAtBar(CurrentBar);
+                    Draw.Line(this, TagDnCont, false,
+                        CurrentBar - dnCont.A.BarIndex, dnCont.A.Price,
+                        0, yNow,
+                        Brushes.DeepSkyBlue, DashStyleHelper.Solid, 2);
+                }
+            }
+            else
+            {
+                RemoveDrawObject(TagUpParent);
+                RemoveDrawObject(TagUpCont);
+                RemoveDrawObject(TagDnParent);
+                RemoveDrawObject(TagDnCont);
             }
 
             // safety line highlight while in trade
