@@ -345,20 +345,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "PreferDominantTrendline", GroupName = "1. Structure", Order = 99)]
         public bool PreferDominantTrendline { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(20, 1000)]
-        [Display(Name = "MaxActiveLineAgeBars", GroupName = "1. Structure", Order = 100)]
-        public int MaxActiveLineAgeBars { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(10, 1000)]
-        [Display(Name = "MaxActiveAgeGapBars", GroupName = "1. Structure", Order = 101)]
-        public int MaxActiveAgeGapBars { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "ShowAllChainedLines", GroupName = "7. Debug", Order = 3)]
-        public bool ShowAllChainedLines { get; set; }
         #endregion
 
         #region NinjaScript lifecycle
@@ -422,9 +408,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 RequireSafetyLineForBounce = true;
                 PreferDominantTrendline = true;
-                MaxActiveLineAgeBars = 240;
-                MaxActiveAgeGapBars = 120;
-                ShowAllChainedLines = false;
             }
             else if (State == State.Configure)
             {
@@ -465,22 +448,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             ValidateTrendlines();
             UpdateTouches(uptrendLine);
             UpdateTouches(downtrendLine);
-
-            // In manual-like mode, avoid touch-boosting every historical segment.
-            if (ShowAllChainedLines)
-            {
-                foreach (var seg in uptrendSegments)
-                    UpdateTouches(seg);
-                foreach (var seg in downtrendSegments)
-                    UpdateTouches(seg);
-            }
-            else
-            {
-                for (int i = Math.Max(0, uptrendSegments.Count - 2); i < uptrendSegments.Count; i++)
-                    UpdateTouches(uptrendSegments[i]);
-                for (int i = Math.Max(0, downtrendSegments.Count - 2); i < downtrendSegments.Count; i++)
-                    UpdateTouches(downtrendSegments[i]);
-            }
+            foreach (var seg in uptrendSegments)
+                UpdateTouches(seg);
+            foreach (var seg in downtrendSegments)
+                UpdateTouches(seg);
 
             DrawLines();
 
@@ -673,15 +644,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Remove invalidated chained segments (body-cross rule).
             PruneInvalidSegments();
 
-            TrendLineModel upFallback = BuildUptrendLine();
-            TrendLineModel dnFallback = BuildDowntrendLine();
-
-            // Prefer mature, recent segments over micro-lines or very old anchors.
-            TrendLineModel up = SelectActiveSegment(uptrendSegments, upFallback);
-            TrendLineModel dn = SelectActiveSegment(downtrendSegments, dnFallback);
-
-            // Coherence guard: avoid mixing very old line on one side with very new line on the other.
-            ApplyRecencyCoherence(ref up, ref dn, upFallback, dnFallback);
+            // Primary tradable rays: latest valid chained segment if available, else fall back to scored search.
+            TrendLineModel up = uptrendSegments.Count > 0 ? uptrendSegments[uptrendSegments.Count - 1] : BuildUptrendLine();
+            TrendLineModel dn = downtrendSegments.Count > 0 ? downtrendSegments[downtrendSegments.Count - 1] : BuildDowntrendLine();
 
             RestoreTouches(up);
             RestoreTouches(dn);
@@ -711,82 +676,28 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (current == null)
                 return candidate;
 
+            // If current became invalid/consumed, allow replacement.
             if (!current.IsValid || current.IsConsumed)
                 return candidate;
 
+            // If the key is unchanged, keep current (it has live TouchBars that will be updated this bar).
             if (current.Key == candidate.Key)
                 return current;
 
             int curTouches = current.TouchBars != null ? current.TouchBars.Count : 0;
             int candTouches = candidate.TouchBars != null ? candidate.TouchBars.Count : 0;
 
+            // Once a line is "mature" (meets MinTouchCount), do not swap it out unless the candidate is strictly better.
             if (curTouches >= MinTouchCount)
+            {
                 return candTouches > curTouches ? candidate : current;
+            }
 
+            // Before maturity: require a meaningful improvement to switch.
             if (candTouches >= curTouches + 1)
                 return candidate;
 
             return current;
-        }
-
-        private bool IsLineRecentEnough(TrendLineModel line)
-        {
-            if (line == null)
-                return false;
-            int age = Math.Max(0, CurrentBar - line.A.BarIndex);
-            return age <= MaxActiveLineAgeBars;
-        }
-
-        private bool IsSegmentMature(TrendLineModel seg)
-        {
-            if (seg == null)
-                return false;
-            int touches = seg.TouchBars != null ? seg.TouchBars.Count : 0;
-            if (touches >= MinTouchCount)
-                return true;
-            return (CurrentBar - seg.B.BarIndex) >= MinBarsFromFirstTouch;
-        }
-
-        private TrendLineModel SelectActiveSegment(List<TrendLineModel> segments, TrendLineModel fallback)
-        {
-            for (int i = segments.Count - 1; i >= 0; i--)
-            {
-                TrendLineModel seg = segments[i];
-                if (seg == null || !seg.IsValid || seg.IsConsumed)
-                    continue;
-                if (!IsLineRecentEnough(seg))
-                    continue;
-                if (!IsSegmentMature(seg))
-                    continue;
-                return seg;
-            }
-
-            if (fallback != null && IsLineRecentEnough(fallback))
-                return fallback;
-            return fallback; // keep fallback as last resort even if old
-        }
-
-        private void ApplyRecencyCoherence(ref TrendLineModel up, ref TrendLineModel dn, TrendLineModel upFallback, TrendLineModel dnFallback)
-        {
-            if (up == null || dn == null)
-                return;
-
-            int upAge = Math.Max(0, CurrentBar - up.A.BarIndex);
-            int dnAge = Math.Max(0, CurrentBar - dn.A.BarIndex);
-            if (Math.Abs(upAge - dnAge) <= MaxActiveAgeGapBars)
-                return;
-
-            // Replace much older side with fallback to keep both sides in similar structural regime.
-            if (upAge > dnAge)
-            {
-                if (upFallback != null && IsLineRecentEnough(upFallback))
-                    up = upFallback;
-            }
-            else
-            {
-                if (dnFallback != null && IsLineRecentEnough(dnFallback))
-                    dn = dnFallback;
-            }
         }
 
         private TrendLineModel BuildUptrendLine()
@@ -1990,82 +1901,42 @@ namespace NinjaTrader.NinjaScript.Strategies
                     Brushes.OrangeRed, DashStyleHelper.Solid, 2);
             }
 
-            int upDrawCount = 0;
-            int dnDrawCount = 0;
-
-            if (ShowAllChainedLines)
+            // Draw chained uptrend segments (dashed, thinner; latest = solid)
+            for (int k = 0; k < uptrendSegments.Count; k++)
             {
-                // Draw all chained uptrend segments (dashed, thinner; latest = solid)
-                for (int k = 0; k < uptrendSegments.Count; k++)
-                {
-                    TrendLineModel seg = uptrendSegments[k];
-                    if (seg == null || !seg.IsValid) continue;
-                    bool isLatest = (k == uptrendSegments.Count - 1);
-                    double yNow = seg.ValueAtBar(CurrentBar);
-                    Draw.Line(this, TagUp + "_chain_" + upDrawCount, false,
-                        CurrentBar - seg.A.BarIndex, seg.A.Price,
-                        0, yNow,
-                        Brushes.LimeGreen,
-                        isLatest ? DashStyleHelper.Solid : DashStyleHelper.Dash,
-                        isLatest ? 2 : 1);
-                    upDrawCount++;
-                }
-
-                for (int k = 0; k < downtrendSegments.Count; k++)
-                {
-                    TrendLineModel seg = downtrendSegments[k];
-                    if (seg == null || !seg.IsValid) continue;
-                    bool isLatest = (k == downtrendSegments.Count - 1);
-                    double yNow = seg.ValueAtBar(CurrentBar);
-                    Draw.Line(this, TagDn + "_chain_" + dnDrawCount, false,
-                        CurrentBar - seg.A.BarIndex, seg.A.Price,
-                        0, yNow,
-                        Brushes.OrangeRed,
-                        isLatest ? DashStyleHelper.Solid : DashStyleHelper.Dash,
-                        isLatest ? 2 : 1);
-                    dnDrawCount++;
-                }
+                TrendLineModel seg = uptrendSegments[k];
+                if (seg == null || !seg.IsValid) continue;
+                bool isLatest = (k == uptrendSegments.Count - 1);
+                double yNow = seg.ValueAtBar(CurrentBar);
+                Draw.Line(this, TagUp + "_chain_" + k, false,
+                    CurrentBar - seg.A.BarIndex, seg.A.Price,
+                    0, yNow,
+                    Brushes.LimeGreen,
+                    isLatest ? DashStyleHelper.Solid : DashStyleHelper.Dash,
+                    isLatest ? 2 : 1);
             }
-            else
-            {
-                // Manual-like mode: show only parent + latest continuation per side.
-                for (int i = Math.Max(0, uptrendSegments.Count - 2); i < uptrendSegments.Count; i++)
-                {
-                    TrendLineModel seg = uptrendSegments[i];
-                    if (seg == null || !seg.IsValid) continue;
-                    bool isLatest = (i == uptrendSegments.Count - 1);
-                    double yNow = seg.ValueAtBar(CurrentBar);
-                    Draw.Line(this, TagUp + "_chain_" + upDrawCount, false,
-                        CurrentBar - seg.A.BarIndex, seg.A.Price,
-                        0, yNow,
-                        Brushes.LimeGreen,
-                        isLatest ? DashStyleHelper.Solid : DashStyleHelper.Dash,
-                        isLatest ? 2 : 1);
-                    upDrawCount++;
-                }
-
-                for (int i = Math.Max(0, downtrendSegments.Count - 2); i < downtrendSegments.Count; i++)
-                {
-                    TrendLineModel seg = downtrendSegments[i];
-                    if (seg == null || !seg.IsValid) continue;
-                    bool isLatest = (i == downtrendSegments.Count - 1);
-                    double yNow = seg.ValueAtBar(CurrentBar);
-                    Draw.Line(this, TagDn + "_chain_" + dnDrawCount, false,
-                        CurrentBar - seg.A.BarIndex, seg.A.Price,
-                        0, yNow,
-                        Brushes.OrangeRed,
-                        isLatest ? DashStyleHelper.Solid : DashStyleHelper.Dash,
-                        isLatest ? 2 : 1);
-                    dnDrawCount++;
-                }
-            }
-
-            for (int k = upDrawCount; k < lastDrawnUpChainCount; k++)
+            // Remove stale up-chain draw objects if the list shrank.
+            for (int k = uptrendSegments.Count; k < lastDrawnUpChainCount; k++)
                 RemoveDrawObject(TagUp + "_chain_" + k);
-            for (int k = dnDrawCount; k < lastDrawnDnChainCount; k++)
+            lastDrawnUpChainCount = uptrendSegments.Count;
+
+            // Draw chained downtrend segments
+            for (int k = 0; k < downtrendSegments.Count; k++)
+            {
+                TrendLineModel seg = downtrendSegments[k];
+                if (seg == null || !seg.IsValid) continue;
+                bool isLatest = (k == downtrendSegments.Count - 1);
+                double yNow = seg.ValueAtBar(CurrentBar);
+                Draw.Line(this, TagDn + "_chain_" + k, false,
+                    CurrentBar - seg.A.BarIndex, seg.A.Price,
+                    0, yNow,
+                    Brushes.OrangeRed,
+                    isLatest ? DashStyleHelper.Solid : DashStyleHelper.Dash,
+                    isLatest ? 2 : 1);
+            }
+            for (int k = downtrendSegments.Count; k < lastDrawnDnChainCount; k++)
                 RemoveDrawObject(TagDn + "_chain_" + k);
-            lastDrawnUpChainCount = upDrawCount;
-            lastDrawnDnChainCount = dnDrawCount;
+            lastDrawnDnChainCount = downtrendSegments.Count;
 
             // Safety line highlight while in trade (use the same safety resolution used by management)
             if (Position.MarketPosition != MarketPosition.Flat)
