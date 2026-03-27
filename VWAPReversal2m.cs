@@ -25,12 +25,20 @@ using NinjaTrader.NinjaScript.DrawingTools;
 // Based on RevAVWAPBiDirect030424.cs — stripped of pivot band complexity.
 // Pure VWAP/AVWAP reversal: detects touch-and-reject, enters via stop order,
 // structural stop from signal bar, configurable R:R with breakeven.
+//
+// Fixes applied v1.1:
+//   FIX1: return→continue-flag so wide-bar skip no longer bypasses breakeven management
+//   FIX2: MinBarsBetweenEntries cooldown now enforced via barsSinceLastTrade counter
+//   FIX3: DayTradeCount uses OrderAction (Buy/SellShort) instead of name prefix
+//   FIX4: Conflicting signal: session VWAP wins instead of cancelling both
+//   FIX5: Bar[1] cross check — skip if signal bar itself crossed VWAP (messy bar)
+//   FIX6: Removed dead variables (signalBarHigh, signalBarLow, PrevDayTradeCount, orderTime)
 
 namespace NinjaTrader.NinjaScript.Strategies
 {
     public class VWAPReversal2m : Strategy
     {
-        // ── Reversal flags (set each bar, reset each bar) ─────────────
+        // ── Reversal flags ────────────────────────────────────────────
         private bool vwapLongFlag;
         private bool vwapShortFlag;
         private bool avwap1LongFlag;
@@ -39,21 +47,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool avwap2ShortFlag;
 
         // ── Day state ─────────────────────────────────────────────────
-        private bool   dayOverVar      = false;
-        private bool   BE_Set          = false;
-        private double PrevDayPnL      = 0;
-        private double PrevDayTradeCount = 0;
-        private int    DayTradeCount   = 0;
+        private bool   dayOverVar        = false;
+        private bool   BE_Set            = false;
+        private double PrevDayPnL        = 0;
+        private int    DayTradeCount     = 0;
         private double AccountRealizedPL   = 0;
         private double AccountUnrealizedPL = 0;
 
-        // ── Signal bar capture ────────────────────────────────────────
-        private double signalBarHigh = 0;
-        private double signalBarLow  = 0;
+        // FIX2: cooldown counter
+        private int barsSinceLastTrade = 999;
 
         // ── Order ref ─────────────────────────────────────────────────
         private Order entryOrder = null;
-        private DateTime orderTime;
 
         // ── Indicators ───────────────────────────────────────────────
         private VWAP1  ofVwapETH;
@@ -67,7 +72,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (State == State.SetDefaults)
             {
-                Description = "VWAP Reversal 2m — Bi-directional VWAP/AVWAP reversal. " +
+                Description = "VWAP Reversal 2m v1.1 — Bi-directional VWAP/AVWAP reversal. " +
                               "Signal: bar crosses VWAP then closes back on same side. " +
                               "Entry: stop order beyond signal bar H/L. Stop: structural (capped). Target: R:R param.";
                 Name        = "VWAPReversal2m";
@@ -90,30 +95,29 @@ namespace NinjaTrader.NinjaScript.Strategies
                 IsInstantiatedOnEachOptimizationIteration = true;
 
                 // ── Default parameter values ─────────────────────────
-                TradeSize         = 1;
-                MaxStopTicks      = 8;       // structural stop capped here; skip trade if bar wider
-                RiskRewardRatio   = 2.0;     // 1:2 default — 6-tick stop → 12-tick target
-                BreakevenTicks    = 6;       // move SL to entry after this many ticks profit
-                MaxDailyLoss      = -600;    // halt trading for the day
-                MaxTradesPerDay   = 4;
-                TradeWindowStart  = 830;     // HHMM
-                TradeWindowEnd    = 1500;
-                UseSessionVWAP    = true;
-                UseAVWAP1         = false;
-                UseAVWAP2         = false;
-                AnchorFrom        = DateTime.Parse("12:30 AM");
-                AnchorFrom2       = DateTime.Parse("12:30 AM");
-                MinBarsBetweenEntries = 3;   // cooldown bars after a trade
+                TradeSize             = 1;
+                MaxStopTicks          = 8;       // skip signal if bar wider than this
+                RiskRewardRatio       = 2.0;     // 1:2 default
+                BreakevenTicks        = 6;       // move SL to entry after this many ticks in profit
+                MaxDailyLoss          = -600;
+                MaxTradesPerDay       = 4;
+                TradeWindowStart      = 830;
+                TradeWindowEnd        = 1500;
+                UseSessionVWAP        = true;
+                UseAVWAP1             = false;
+                UseAVWAP2             = false;
+                AnchorFrom            = DateTime.Parse("12:30 AM");
+                AnchorFrom2           = DateTime.Parse("12:30 AM");
+                MinBarsBetweenEntries = 3;       // FIX2: cooldown bars enforced
 
                 AddPlot(Brushes.Transparent, "Signal");
             }
             else if (State == State.Configure)
             {
-                AddDataSeries(Data.BarsPeriodType.Minute, 1); // required by VWAP1
+                AddDataSeries(Data.BarsPeriodType.Minute, 1);
             }
             else if (State == State.DataLoaded)
             {
-                // Session VWAP (always loaded, shown only when UseSessionVWAP = true)
                 ofVwapETH = VWAP1(BarsArray[0],
                     new VWAPDesign.StdDesign { Enabled = false, Num = 1 },
                     new VWAPDesign.StdDesign { Enabled = false, Num = 2 },
@@ -122,7 +126,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (UseSessionVWAP)
                     AddChartIndicator(ofVwapETH);
 
-                // AVWAP 1
                 if (UseAVWAP1 && AnchorFrom != DateTime.Parse("12:30 AM"))
                 {
                     VWAPx1 = AVWAP2(BarsArray[0], AnchorFrom,
@@ -132,7 +135,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                     AddChartIndicator(VWAPx1);
                 }
 
-                // AVWAP 2
                 if (UseAVWAP2 && AnchorFrom2 != DateTime.Parse("12:30 AM"))
                 {
                     VWAPx2 = AVWAP2(BarsArray[0], AnchorFrom2,
@@ -150,20 +152,21 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (CurrentBars[0] < BarsRequiredToTrade)
                 return;
 
-            // Only process the primary bar series
             if (BarsInProgress != 0)
                 return;
 
             double toTime = ToTime(Time[0]) / 100.0;
 
+            // ── FIX2: increment cooldown counter every bar ────────────
+            barsSinceLastTrade++;
+
             // ── End-of-day reset ──────────────────────────────────────
-            if ((toTime == 1510 || toTime == 2100) && IsFirstTickOfBar)
+            if (toTime == 1510 || toTime == 2100)
             {
                 Print("[VWAPRev] EOD reset at " + Time[0]);
                 ResetDayFlags();
-                PrevDayPnL        = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit;
-                PrevDayTradeCount = SystemPerformance.AllTrades.Count;
-                DayTradeCount     = 0;
+                PrevDayPnL    = SystemPerformance.AllTrades.TradesPerformance.Currency.CumProfit;
+                DayTradeCount = 0;
                 return;
             }
 
@@ -181,130 +184,131 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 if (!dayOverVar)
                 {
-                    Print("[VWAPRev] Max daily loss hit. No more trades today.");
+                    Print("[VWAPRev] Max daily loss hit. Halting.");
                     dayOverVar = true;
-                    if (Position.MarketPosition == MarketPosition.Long)  ExitLong();
-                    else if (Position.MarketPosition == MarketPosition.Short) ExitShort();
+                    if (Position.MarketPosition == MarketPosition.Long)        ExitLong();
+                    else if (Position.MarketPosition == MarketPosition.Short)  ExitShort();
                 }
                 return;
             }
 
-            // ── Max trades guard ──────────────────────────────────────
-            if (DayTradeCount >= MaxTradesPerDay)
-                return;
+            // ── FIX1: use a flag instead of return so breakeven always runs ──
+            bool allowEntry = (Position.MarketPosition == MarketPosition.Flat)
+                           && (entryOrder == null)
+                           && (DayTradeCount < MaxTradesPerDay)
+                           && (barsSinceLastTrade >= MinBarsBetweenEntries); // FIX2
 
-            // ── Fetch VWAP values ─────────────────────────────────────
-            vwPrice = Instrument.MasterInstrument.RoundToTickSize(
-                VWAP1(BarsArray[0],
-                    new VWAPDesign.StdDesign { Enabled = false, Num = 1 },
-                    new VWAPDesign.StdDesign { Enabled = false, Num = 2 },
-                    new VWAPDesign.StdDesign { Enabled = false, Num = 3 },
-                    true, true, true).Output[0]);
-
-            double avwap1 = 0, avwap2 = 0;
-
-            if (UseAVWAP1 && VWAPx1 != null)
-                avwap1 = Instrument.MasterInstrument.RoundToTickSize(
-                    AVWAP2(BarsArray[0], AnchorFrom,
-                        new VWAPDesign.StdDesign { Enabled = false, Num = 2 },
-                        new VWAPDesign.StdDesign { Enabled = false, Num = 3 },
-                        true, true, true).Output[0]);
-
-            if (UseAVWAP2 && VWAPx2 != null)
-                avwap2 = Instrument.MasterInstrument.RoundToTickSize(
-                    AVWAP2(BarsArray[0], AnchorFrom2,
-                        new VWAPDesign.StdDesign { Enabled = false, Num = 2 },
-                        new VWAPDesign.StdDesign { Enabled = false, Num = 3 },
-                        true, true, true).Output[0]);
-
-            // ── Detect signals ────────────────────────────────────────
-            ResetEntryFlags();
-
-            // SIGNAL PATTERN (bars indexed from current=0):
-            //   Bar[2]: crossed the VWAP (High > VWAP > Low) — the touch bar
-            //   Bar[1]: signal bar — closed AWAY from VWAP (confirms direction)
-            //   Bar[0]: current bar — we act at the open (stop order placed)
-            //
-            // LONG setup:  Bar[2] crossed VWAP; Bar[1] closed ABOVE VWAP → price bounced up
-            // SHORT setup: Bar[2] crossed VWAP; Bar[1] closed BELOW VWAP → price rejected down
-
-            if (UseSessionVWAP)
-                DetectSignal(vwPrice, ref vwapLongFlag, ref vwapShortFlag, "SessionVWAP");
-
-            if (UseAVWAP1 && avwap1 > 0)
-                DetectSignal(avwap1, ref avwap1LongFlag, ref avwap1ShortFlag, "AVWAP1");
-
-            if (UseAVWAP2 && avwap2 > 0)
-                DetectSignal(avwap2, ref avwap2LongFlag, ref avwap2ShortFlag, "AVWAP2");
-
-            // ── Entry ─────────────────────────────────────────────────
-            if (Position.MarketPosition == MarketPosition.Flat && entryOrder == null)
+            // ── Entry block ───────────────────────────────────────────
+            if (allowEntry)
             {
+                // ── Fetch VWAP values ─────────────────────────────────
+                vwPrice = Instrument.MasterInstrument.RoundToTickSize(
+                    VWAP1(BarsArray[0],
+                        new VWAPDesign.StdDesign { Enabled = false, Num = 1 },
+                        new VWAPDesign.StdDesign { Enabled = false, Num = 2 },
+                        new VWAPDesign.StdDesign { Enabled = false, Num = 3 },
+                        true, true, true).Output[0]);
+
+                double avwap1 = 0, avwap2 = 0;
+
+                if (UseAVWAP1 && VWAPx1 != null)
+                    avwap1 = Instrument.MasterInstrument.RoundToTickSize(
+                        AVWAP2(BarsArray[0], AnchorFrom,
+                            new VWAPDesign.StdDesign { Enabled = false, Num = 2 },
+                            new VWAPDesign.StdDesign { Enabled = false, Num = 3 },
+                            true, true, true).Output[0]);
+
+                if (UseAVWAP2 && VWAPx2 != null)
+                    avwap2 = Instrument.MasterInstrument.RoundToTickSize(
+                        AVWAP2(BarsArray[0], AnchorFrom2,
+                            new VWAPDesign.StdDesign { Enabled = false, Num = 2 },
+                            new VWAPDesign.StdDesign { Enabled = false, Num = 3 },
+                            true, true, true).Output[0]);
+
+                // ── Detect signals ────────────────────────────────────
+                ResetEntryFlags();
+
+                // SIGNAL PATTERN:
+                //   Bar[2]: touch bar — crossed the VWAP (High > VWAP > Low)
+                //   Bar[1]: signal bar — closed away from VWAP (NOT crossing it — FIX5)
+                //   Bar[0]: current bar — stop order placed at bar[1] H/L + 1 tick
+
+                if (UseSessionVWAP)
+                    DetectSignal(vwPrice,  ref vwapLongFlag,  ref vwapShortFlag,  "SessionVWAP");
+
+                if (UseAVWAP1 && avwap1 > 0)
+                    DetectSignal(avwap1, ref avwap1LongFlag, ref avwap1ShortFlag, "AVWAP1");
+
+                if (UseAVWAP2 && avwap2 > 0)
+                    DetectSignal(avwap2, ref avwap2LongFlag, ref avwap2ShortFlag, "AVWAP2");
+
+                // FIX4: Session VWAP takes priority; conflicting AVWAP signals demoted
                 bool goLong  = vwapLongFlag  || avwap1LongFlag  || avwap2LongFlag;
                 bool goShort = vwapShortFlag || avwap1ShortFlag || avwap2ShortFlag;
 
-                // Don't take conflicting signals
-                if (goLong && goShort) goLong = goShort = false;
+                if (goLong && goShort)
+                {
+                    // Session VWAP wins; if session VWAP is neutral, skip
+                    if (vwapLongFlag)       goShort = false;
+                    else if (vwapShortFlag) goLong  = false;
+                    else                    goLong  = goShort = false;
+                }
 
                 if (goLong)
                 {
-                    // Entry 1 tick above signal bar high
-                    // Stop  1 tick below signal bar low (+ 1 tick buffer = 2 ticks below low)
-                    double rawStopSize = (High[1] - Low[1]) / TickSize + 2; // in ticks
-
-                    if (rawStopSize > MaxStopTicks)
-                    {
-                        Print(string.Format("[VWAPRev] LONG skipped — bar too wide: {0:F0} ticks > max {1}", rawStopSize, MaxStopTicks));
-                        return;
-                    }
-
-                    int stopTicks   = (int)Math.Round(rawStopSize);
-                    int targetTicks = (int)Math.Round(stopTicks * RiskRewardRatio);
-
-                    double entryTrigger = High[1] + TickSize;
-
-                    SetStopLoss("Long VWAP Rev", CalculationMode.Ticks, stopTicks, false);
-                    SetProfitTarget("Long VWAP Rev", CalculationMode.Ticks, targetTicks);
-
-                    entryOrder    = EnterLongStopMarket(0, true, Convert.ToInt32(TradeSize), entryTrigger, "Long VWAP Rev");
-                    signalBarHigh = High[1];
-                    signalBarLow  = Low[1];
-                    BE_Set        = false;
-
-                    Print(string.Format("[VWAPRev] LONG placed | Trigger:{0:F2} | Stop:{1}t | Target:{2}t | R:R 1:{3}",
-                        entryTrigger, stopTicks, targetTicks, RiskRewardRatio));
-                }
-                else if (goShort)
-                {
-                    // Entry 1 tick below signal bar low
-                    // Stop  2 ticks above signal bar high
+                    // Entry: 1 tick ABOVE signal bar high (stop order)
+                    // Stop : signal bar range + 2 tick buffer
                     double rawStopSize = (High[1] - Low[1]) / TickSize + 2;
 
                     if (rawStopSize > MaxStopTicks)
                     {
-                        Print(string.Format("[VWAPRev] SHORT skipped — bar too wide: {0:F0} ticks > max {1}", rawStopSize, MaxStopTicks));
-                        return;
+                        // FIX1: just log and fall through to breakeven — do NOT return
+                        Print(string.Format("[VWAPRev] LONG skipped — bar too wide: {0:F0}t > max {1}t", rawStopSize, MaxStopTicks));
                     }
+                    else
+                    {
+                        int stopTicks   = (int)Math.Round(rawStopSize);
+                        int targetTicks = (int)Math.Round(stopTicks * RiskRewardRatio);
+                        double entryTrigger = High[1] + TickSize;
 
-                    int stopTicks   = (int)Math.Round(rawStopSize);
-                    int targetTicks = (int)Math.Round(stopTicks * RiskRewardRatio);
+                        SetStopLoss("Long VWAP Rev",   CalculationMode.Ticks, stopTicks,   false);
+                        SetProfitTarget("Long VWAP Rev", CalculationMode.Ticks, targetTicks);
 
-                    double entryTrigger = Low[1] - TickSize;
+                        entryOrder = EnterLongStopMarket(0, true, Convert.ToInt32(TradeSize), entryTrigger, "Long VWAP Rev");
+                        BE_Set     = false;
 
-                    SetStopLoss("Short VWAP Rev", CalculationMode.Ticks, stopTicks, false);
-                    SetProfitTarget("Short VWAP Rev", CalculationMode.Ticks, targetTicks);
-
-                    entryOrder    = EnterShortStopMarket(0, true, Convert.ToInt32(TradeSize), entryTrigger, "Short VWAP Rev");
-                    signalBarHigh = High[1];
-                    signalBarLow  = Low[1];
-                    BE_Set        = false;
-
-                    Print(string.Format("[VWAPRev] SHORT placed | Trigger:{0:F2} | Stop:{1}t | Target:{2}t | R:R 1:{3}",
-                        entryTrigger, stopTicks, targetTicks, RiskRewardRatio));
+                        Print(string.Format("[VWAPRev] LONG placed | Trigger:{0:F2} | Stop:{1}t | Target:{2}t | R:R 1:{3}",
+                            entryTrigger, stopTicks, targetTicks, RiskRewardRatio));
+                    }
                 }
-            }
+                else if (goShort)
+                {
+                    double rawStopSize = (High[1] - Low[1]) / TickSize + 2;
 
-            // ── Breakeven management ──────────────────────────────────
+                    if (rawStopSize > MaxStopTicks)
+                    {
+                        // FIX1: just log and fall through — do NOT return
+                        Print(string.Format("[VWAPRev] SHORT skipped — bar too wide: {0:F0}t > max {1}t", rawStopSize, MaxStopTicks));
+                    }
+                    else
+                    {
+                        int stopTicks   = (int)Math.Round(rawStopSize);
+                        int targetTicks = (int)Math.Round(stopTicks * RiskRewardRatio);
+                        double entryTrigger = Low[1] - TickSize;
+
+                        SetStopLoss("Short VWAP Rev",   CalculationMode.Ticks, stopTicks,   false);
+                        SetProfitTarget("Short VWAP Rev", CalculationMode.Ticks, targetTicks);
+
+                        entryOrder = EnterShortStopMarket(0, true, Convert.ToInt32(TradeSize), entryTrigger, "Short VWAP Rev");
+                        BE_Set     = false;
+
+                        Print(string.Format("[VWAPRev] SHORT placed | Trigger:{0:F2} | Stop:{1}t | Target:{2}t | R:R 1:{3}",
+                            entryTrigger, stopTicks, targetTicks, RiskRewardRatio));
+                    }
+                }
+            } // end allowEntry
+
+            // ── FIX1: Breakeven management always runs (outside entry block) ──
             if (!BE_Set)
             {
                 if (Position.MarketPosition == MarketPosition.Long &&
@@ -327,37 +331,42 @@ namespace NinjaTrader.NinjaScript.Strategies
         // ─────────────────────────────────────────────────────────────
         // Detect VWAP touch-and-reject pattern
         //
-        //   Bar[2]: must have crossed the VWAP line (touched both sides)
-        //   Bar[1]: signal bar — close confirms direction
+        //   Bar[2]: touch bar — must cross VWAP (High > VWAP > Low)
+        //   Bar[1]: signal bar — close confirms direction AND bar must NOT itself cross VWAP (FIX5)
         //
-        //   Long : Bar[1] Low touched VWAP zone AND closed above VWAP
-        //   Short: Bar[1] High touched VWAP zone AND closed below VWAP
+        //   Long : Bar[1] close ABOVE VWAP, low touched VWAP zone
+        //   Short: Bar[1] close BELOW VWAP, high touched VWAP zone
         // ─────────────────────────────────────────────────────────────
         private void DetectSignal(double vwapVal, ref bool longFlag, ref bool shortFlag, string label)
         {
             longFlag  = false;
             shortFlag = false;
 
-            // Bar[2] must be the touch bar (crossed VWAP)
-            bool bar2Touched = Low[2] < vwapVal && High[2] > vwapVal;
-            if (!bar2Touched) return;
+            // Bar[2] must have crossed VWAP
+            if (!(Low[2] < vwapVal && High[2] > vwapVal)) return;
 
-            // Long: Bar[1] closed above VWAP (bounce confirmed)
-            //       and Bar[1] came down close enough to touch VWAP
+            // FIX5: Bar[1] must NOT itself cross VWAP (indecisive bar = no signal)
+            bool bar1Crossed = Low[1] < vwapVal && High[1] > vwapVal;
+            if (bar1Crossed)
+            {
+                Print(string.Format("[VWAPRev] {0} signal skipped — Bar[1] also crossed VWAP (messy)", label));
+                return;
+            }
+
+            // Long: Bar[1] closed above VWAP AND low was within touch zone of VWAP
             if (Close[1] > vwapVal && Low[1] <= vwapVal + 2 * TickSize)
             {
                 longFlag = true;
-                Print(string.Format("[VWAPRev] {0} LONG signal | VWAP:{1:F2} | Bar[1]Low:{2:F2} | Bar[1]Close:{3:F2}",
+                Print(string.Format("[VWAPRev] {0} LONG signal | VWAP:{1:F2} Bar[1]Low:{2:F2} Close:{3:F2}",
                     label, vwapVal, Low[1], Close[1]));
                 return;
             }
 
-            // Short: Bar[1] closed below VWAP (rejection confirmed)
-            //        and Bar[1] came up close enough to touch VWAP
+            // Short: Bar[1] closed below VWAP AND high was within touch zone of VWAP
             if (Close[1] < vwapVal && High[1] >= vwapVal - 2 * TickSize)
             {
                 shortFlag = true;
-                Print(string.Format("[VWAPRev] {0} SHORT signal | VWAP:{1:F2} | Bar[1]High:{2:F2} | Bar[1]Close:{3:F2}",
+                Print(string.Format("[VWAPRev] {0} SHORT signal | VWAP:{1:F2} Bar[1]High:{2:F2} Close:{3:F2}",
                     label, vwapVal, High[1], Close[1]));
             }
         }
@@ -372,8 +381,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void ResetDayFlags()
         {
             ResetEntryFlags();
-            BE_Set     = false;
-            dayOverVar = false;
+            BE_Set            = false;
+            dayOverVar        = false;
+            barsSinceLastTrade = 999; // FIX2: reset cooldown on new day
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -403,12 +413,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (execution.Order.OrderState != OrderState.PartFilled)
                 entryOrder = null;
 
-            if (execution.Order.Name.StartsWith("Long") ||
-                execution.Order.Name.StartsWith("Short"))
+            // FIX3: only count actual entry fills (Buy = long entry, SellShort = short entry)
+            if (execution.Order.OrderAction == OrderAction.Buy ||
+                execution.Order.OrderAction == OrderAction.SellShort)
             {
-                orderTime = execution.Order.Time;
-                BE_Set    = false;
+                BE_Set = false;
                 DayTradeCount++;
+                barsSinceLastTrade = 0; // FIX2: reset cooldown on entry fill
                 Print("[VWAPRev] Trade #" + DayTradeCount + " of " + MaxTradesPerDay + " today.");
             }
         }
@@ -448,11 +459,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int MaxTradesPerDay { get; set; }
 
         [Range(0, 2400), NinjaScriptProperty]
-        [Display(Name = "Trade Window Start (HHMM, e.g. 830)", GroupName = "1 - Trade", Order = 3)]
+        [Display(Name = "Trade Window Start (HHMM)", GroupName = "1 - Trade", Order = 3)]
         public double TradeWindowStart { get; set; }
 
         [Range(0, 2400), NinjaScriptProperty]
-        [Display(Name = "Trade Window End (HHMM, e.g. 1500)", GroupName = "1 - Trade", Order = 4)]
+        [Display(Name = "Trade Window End (HHMM)", GroupName = "1 - Trade", Order = 4)]
         public double TradeWindowEnd { get; set; }
 
         [NinjaScriptProperty]
