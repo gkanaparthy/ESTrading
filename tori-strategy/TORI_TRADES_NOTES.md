@@ -109,6 +109,45 @@
 
 ---
 
+## 🔒 Ground-Truth Addendum (from provided YouTube transcripts)
+
+### 1) Top-Down Chaining (MOST IMPORTANT)
+- This is not optional in her process. She explicitly chains trendlines from higher TF to lower TF.
+- Practical sequence shown in multiple videos: **Monthly → Weekly → Daily → 4H → 1H (→ lower execution TF)**.
+- For our implementation adaptation, use: **Daily → 4H → 1H → 2M**.
+- **Every new line must connect to the prior line’s Point B** ("previous point B is new point A").
+- As you move down TFs, you refine and add steeper lines, but you do not break continuity.
+- Her framing: "all lines connect to one another"; previous touchpoint/Point B becomes next line’s start anchor.
+- If a timeframe has no additional valid pullback/line to draw, that is the cue to move down to the next timeframe.
+- Slight point adjustments are expected as you zoom in (higher precision on lower TF), but continuity must remain intact.
+
+### 2) Action/Safety Assignment Semantics
+- Before break: lines are just uptrend/downtrend structure.
+- After break:
+  - **Action line = the line that was broken** (entry trigger)
+  - **Safety line = the opposite line** (risk management / stop logic / hold-until-invalidated)
+- For break trades: she repeatedly describes **enter on action break, manage/exit by safety behavior**.
+- For bounce playbook: she verbally treats the same structural boundary as both trigger and risk reference in continuation context; operationally this means do not detach bounce risk logic from the bounced structure.
+
+### 3) Continuity of Trendlines ("B→C→D" behavior)
+- Trendlines are maintained as a continuous structural story, not independent random rays.
+- If a continuation segment is valid, it should roll forward from prior anchor logic (connected chain), not reset from unrelated micro-pivots.
+- Her practical rule of thumb from examples: **drag/adjust Point B to the most recent valid touch while preserving continuity**.
+- Strong emphasis on avoiding overdraw and disconnected line spam.
+- Continuity is visual + structural: if lines do not connect cleanly across steps/timeframes, the markup is considered lower quality.
+
+### 4) Wick-Based Construction Priority
+- In the provided long strategy breakdown, she explicitly says she includes full price action and uses wick extremes for markup context.
+- Internal implementation note: if adapting to body-based invalidation for robustness, treat that as an adaptation, not literal replication.
+
+### 5) Practical Coding Implication (for our ESTrendline work)
+- Keep a **connected parent→continuation model**.
+- Preserve explicit **Action vs Safety identity per trade** in state/logging.
+- Prioritize line sets that preserve **continuity and obviousness** over cluttered micro-line churn.
+- Avoid selection logic that mixes very old parent with unrelated fresh micro-segment unless continuity constraints are satisfied.
+
+---
+
 ## 🧠 Core Philosophy
 
 - Trendlines are NOT prediction tools — they are **reaction tools**

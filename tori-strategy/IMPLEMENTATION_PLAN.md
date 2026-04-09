@@ -7,6 +7,31 @@
 
 ---
 
+## 🔒 TRANSCRIPT-LOCKED NON-NEGOTIABLES (added from provided YouTube notes)
+
+These are now explicit constraints for implementation and future patches.
+
+1. **Top-Down Chaining is mandatory**
+   - For our intraday adaptation, base chain is: **Daily → 4H → 1H → 2M execution** (instead of full Monthly→... ladder).
+   - Each lower-timeframe line must connect from the previous higher-timeframe line’s latest valid **Point B**.
+
+2. **Action/Safety assignment is event-driven**
+   - Before break: lines are just structural up/down lines.
+   - On break:
+     - **Action line = broken line**
+     - **Safety line = opposing line**
+   - On bounce continuation: treat the bounced structure as primary risk reference for stop placement logic.
+
+3. **Continuity over clutter**
+   - Trendlines must form a connected structural narrative (A→B, then B→C, then C→D... where valid).
+   - Avoid disconnected micro-lines that do not chain from prior structure.
+   - Prefer obvious, connected lines over dense overdraw.
+
+4. **Wick-based construction priority**
+   - Swing points and trendline anchors use wick extremes as primary reference.
+
+---
+
 ## ⚠️ RISK MANAGEMENT PHILOSOPHY (READ FIRST)
 
 This strategy is built **stop-first, entry-second**. Every module exists to protect capital. The entry is the least important part. What matters:
@@ -115,8 +140,16 @@ class TrendLine {
 ### Construction Rules
 1. **Uptrend line (support):** Connect 2+ confirmed Pivot Lows where each low > previous low (higher lows)
 2. **Downtrend line (resistance):** Connect 2+ confirmed Pivot Highs where each high < previous high (lower highs)
-3. **Point A** = older swing (anchor, never moves)
-4. **Point B** = newer qualifying swing (updates as new swings form)
+3. **Per-line anchor rule:** Point A = older swing (anchor for that specific segment)
+4. **Point B** = newer qualifying swing
+5. **Continuity rule:** next continuation segment must start from prior segment’s Point B (B→C→D chain)
+
+### Top-Down Chaining Rule (intraday adaptation)
+- Build structure in this order: **Daily → 4H → 1H → 2M**.
+- Lower TF line initialization must inherit continuity from the higher TF endpoint (latest valid B).
+- 2M execution lines are invalid if disconnected from the active Daily/4H/1H structural chain.
+- If a timeframe has no further valid pullback/segment, move down to the next timeframe.
+- As you move lower, allow slight point refinement for precision, but preserve chain continuity.
 
 ### Validity Checks (Zero-Intersection Rule)
 Between PointA and PointB (and forward to current bar):
@@ -227,8 +260,12 @@ line.IsConsumed = true;
 **Purpose:** Identify and project the opposing trendline for stop placement  
 
 ### Definition
-- **Long trade** (downtrend line broke) → Safety Line = `uptrendLine`
-- **Short trade** (uptrend line broke) → Safety Line = `downtrendLine`
+- **Break Long** (downtrend line broke) → Action=`downtrendLine`, Safety=`uptrendLine`
+- **Break Short** (uptrend line broke) → Action=`uptrendLine`, Safety=`downtrendLine`
+- **Bounce Long** (bounce on uptrend support) → Action=`uptrendLine`, Safety reference anchored to bounced structure for stop logic
+- **Bounce Short** (bounce on downtrend resistance) → Action=`downtrendLine`, Safety reference anchored to bounced structure for stop logic
+
+> Assignment must be persisted per-trade at entry (`activeAction`, `activeSafety`) and never inferred loosely after the fact.
 
 ### Safety Line Requirements (Hard Filter — No Safety = No Trade)
 | Check | Rule |
@@ -252,6 +289,8 @@ safetyStop = safetyLine.GetValueAtBar(CurrentBar)
 ## 📦 Module 6: HTF Bias Filter + Volatility Guard
 
 **Purpose:** Only trade in direction of higher timeframe trend AND avoid dangerous volatility regimes  
+
+> Transcript rule reinforcement: do not take lower-TF "A+" breaks that fight higher-TF structure. If HTF chain is bullish, short breaks on 2M are treated as likely fakeouts unless full chain context has flipped.
 
 ### 6A: HTF Bias Filter
 
