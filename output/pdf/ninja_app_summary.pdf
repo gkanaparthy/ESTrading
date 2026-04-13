@@ -1,0 +1,66 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 1 /Kids [3 0 R] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+6 0 obj
+<< /Length 4358 >>
+stream
+BT /F2 18.00 Tf 0.100 0.160 0.240 rg 1 0 0 1 42.00 748.00 Tm (App Summary: NinjaTrader ES Strategy Repo) Tj ET
+BT /F1 8.20 Tf 0.350 0.380 0.420 rg 1 0 0 1 42.00 731.00 Tm (Based on repo evidence in ESStructureAnchorAVWAP.cs, ESVwapLite.cs, CHANGES.md, and CODE_REVIEW_ESStructureAnchorAVWAP.md) Tj ET
+q 0.9 0.9 0.9 RG 0.8 w 42 717.00 m 570 717.00 l S Q
+BT /F2 10.80 Tf 0.100 0.160 0.240 rg 1 0 0 1 42.00 697.00 Tm (WHAT IT IS) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 684.00 Tm (This repo contains 54 NinjaTrader 8 Strategy scripts for futures trading.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 673.00 Tm (Its clearest current focus is ESStructureAnchorAVWAP, plus a lighter ESVwapLite variant.) Tj ET
+BT /F2 10.80 Tf 0.100 0.160 0.240 rg 1 0 0 1 42.00 656.00 Tm (WHO IT'S FOR) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 643.00 Tm (Primary persona explicitly named in repo: Not found in repo.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 632.00 Tm (Best repo-based fit: ES futures traders and NinjaTrader strategy builders using rule-based VWAP/AVWAP systems.) Tj ET
+BT /F2 10.80 Tf 0.100 0.160 0.240 rg 1 0 0 1 42.00 615.00 Tm (WHAT IT DOES) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 602.00 Tm (- Ships 54 custom strategies spanning AVWAP/VWAP, pivots, opening range, EMA pullbacks, and session-level pullbacks.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 591.00 Tm (- Uses ESStructureAnchorAVWAP for structure anchors, regime gates, and risk-first daily controls.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 580.00 Tm (- Combines HOD/LOD, structural overrides, impulse-origin anchors, session VWAP, and WTD AVWAP anchors.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 569.00 Tm (- Tracks WTD AVWAP from Sunday 17:00 CT with a running accumulator beyond the 256-bar lookback limit.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 558.00 Tm (- Applies ATR/time-window/gap-day filters plus caps for opportunities, consecutive losses, daily R, and per-trade risk.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 547.00 Tm (- Places bracket orders, moves stops to breakeven at 1R, logs MFE/MAE, and supports chart overlays plus Q/A/C manual hotkeys.) Tj ET
+BT /F2 10.80 Tf 0.100 0.160 0.240 rg 1 0 0 1 42.00 530.00 Tm (HOW IT WORKS) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 517.00 Tm (Bars, volume, and trading-hours data feed NinjaTrader strategy lifecycle methods.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 506.00 Tm (OnStateChange loads ATR, EMA, SMA, ADX, PriorDayOHLC, time-zone handling, and manual AVWAP2 anchors.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 495.00 Tm (OnBarUpdate resets session state, updates daily extremes and weekly accumulators, then builds active anchors.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 484.00 Tm (Anchor output flows through regime/risk gates, then into EnterLong/EnterShort with SetStopLoss/SetProfitTarget.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 473.00 Tm (OnExecutionUpdate records realized R, MFE/MAE, and chart/log telemetry for monitoring.) Tj ET
+BT /F2 10.80 Tf 0.100 0.160 0.240 rg 1 0 0 1 42.00 456.00 Tm (HOW TO RUN) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 443.00 Tm (1. Use NinjaTrader 8 / NinjaScript; CHANGES.md explicitly notes NinjaTrader 8 on .NET Framework 4.8.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 432.00 Tm (2. Load a strategy file such as ESStructureAnchorAVWAP.cs or ESVwapLite.cs into NinjaTrader and compile it.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 421.00 Tm (3. Run it on ES data with at least 50 bars of history; repo review references ES 2-minute bars as the baseline.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 410.00 Tm (4. Configure anchor/risk parameters and optional chart or log toggles in the strategy properties.) Tj ET
+BT /F1 9.30 Tf 0.120 0.120 0.120 rg 1 0 0 1 42.00 399.00 Tm (5. Exact import path, required data connection, and sample workspace/template: Not found in repo.) Tj ET
+q 0.9 0.9 0.9 RG 0.8 w 42 62.00 m 570 62.00 l S Q
+BT /F1 8.00 Tf 0.380 0.400 0.440 rg 1 0 0 1 42.00 50.00 Tm (Summary generated from local repo evidence only. No README or end-user setup guide was present in the workspace.) Tj ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000257 00000 n 
+0000000327 00000 n 
+0000000402 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+4812
+%%EOF
