@@ -56,6 +56,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "15m slow EMA", GroupName = "Higher TF Filter", Order = 16)]
         public int HTFSlowPeriod { get; set; }
 
+        [NinjaScriptProperty]
+        [Display(Name = "Use pocket pivot long override", GroupName = "Higher TF Filter", Order = 17)]
+        public bool UsePocketPivotLongOverride { get; set; }
+
+        [Range(1, int.MaxValue), NinjaScriptProperty]
+        [Display(Name = "Pocket pivot long lookback", GroupName = "Higher TF Filter", Order = 18)]
+        public int PocketPivotLongLookback { get; set; }
+
         [Range(0.0, double.MaxValue), NinjaScriptProperty]
         [Display(Name = "Min room to next structure (points)", GroupName = "Structure Filter", Order = 17)]
         public double MinRoomPoints { get; set; }
