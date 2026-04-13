@@ -27,12 +27,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Slope lookback (bars)", GroupName = "Trend Filters", Order = 10)]
         public int SlopeLookbackBars { get; set; }
 
+        [Range(0, int.MaxValue), NinjaScriptProperty]
+        [Display(Name = "Min SMA10 net move (ticks)", GroupName = "Trend Filters", Order = 11)]
+        public int MinSlopeRiseTicks { get; set; }
+
         [Range(1, int.MaxValue), NinjaScriptProperty]
-        [Display(Name = "Slope normalization ATR bars", GroupName = "Trend Filters", Order = 11)]
+        [Display(Name = "Slope normalization ATR bars", GroupName = "Trend Filters", Order = 12)]
         public int SlopeAtrPeriod { get; set; }
 
         [Range(0.0, double.MaxValue), NinjaScriptProperty]
-        [Display(Name = "Min normalized slope score", GroupName = "Trend Filters", Order = 12)]
+        [Display(Name = "Min normalized slope score", GroupName = "Trend Filters", Order = 13)]
         public double MinNormalizedSlopeScore { get; set; }
 
         [Range(3, int.MaxValue), NinjaScriptProperty]
@@ -162,6 +166,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseRTH = true;
 
                 SlopeLookbackBars = 8;
+                MinSlopeRiseTicks = 4;
                 SlopeAtrPeriod = 14;
                 MinNormalizedSlopeScore = 0.25;
                 PriorHighLookback = 5;//20;
@@ -552,6 +557,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 								&& Low[4] > sma10[4] && Low[5] > sma10[5] && Low[6] > sma10[6] && sma10[6]> sma21[6];
             if (!last3Above) return false;
 
+            double netMove = sma10[1] - sma10[SlopeLookbackBars + 1];
+            if (netMove < MinSlopeRiseTicks * TickSize) return false;
             double slopeScore = NormalizedSlopeScore();
             if (double.IsNaN(slopeScore) || slopeScore < MinNormalizedSlopeScore) return false;
 
@@ -578,6 +585,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 								&& High[4] < sma10[4] && High[5] < sma10[5] && High[6] < sma10[6] && sma10[6]< sma21[6];
             if (!last3Below) return false;
 
+            double netMove = sma10[SlopeLookbackBars + 1] - sma10[1];
+            if (netMove < MinSlopeRiseTicks * TickSize) return false;
             double slopeScore = -NormalizedSlopeScore();
             if (double.IsNaN(slopeScore) || slopeScore < MinNormalizedSlopeScore) return false;
 
