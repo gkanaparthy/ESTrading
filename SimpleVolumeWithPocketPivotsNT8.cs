@@ -6,7 +6,9 @@ using System.Globalization;
 using System.Windows.Media;
 using System.Xml.Serialization;
 using NinjaTrader.Data;
+using NinjaTrader.Core.FloatingPoint;
 using NinjaTrader.Gui.Tools;
+using NinjaTrader.Gui.Chart;
 using NinjaTrader.NinjaScript;
 #endregion
 
@@ -44,61 +46,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Display(Name = "Paint price bars", GroupName = "Display", Order = 11)]
         public bool PaintPriceBars { get; set; }
-
-        [XmlIgnore]
-        [Display(Name = "Pocket Pivot Color", GroupName = "Colors", Order = 20)]
-        public Brush PocketPivotBrush { get; set; }
-
-        [Browsable(false)]
-        public string PocketPivotBrushSerializable
-        {
-            get { return Serialize.BrushToString(PocketPivotBrush); }
-            set { PocketPivotBrush = Serialize.StringToBrush(value); }
-        }
-
-        [XmlIgnore]
-        [Display(Name = "Up Volume Color", GroupName = "Colors", Order = 21)]
-        public Brush UpVolumeBrush { get; set; }
-
-        [Browsable(false)]
-        public string UpVolumeBrushSerializable
-        {
-            get { return Serialize.BrushToString(UpVolumeBrush); }
-            set { UpVolumeBrush = Serialize.StringToBrush(value); }
-        }
-
-        [XmlIgnore]
-        [Display(Name = "Down Volume Color", GroupName = "Colors", Order = 22)]
-        public Brush DownVolumeBrush { get; set; }
-
-        [Browsable(false)]
-        public string DownVolumeBrushSerializable
-        {
-            get { return Serialize.BrushToString(DownVolumeBrush); }
-            set { DownVolumeBrush = Serialize.StringToBrush(value); }
-        }
-
-        [XmlIgnore]
-        [Display(Name = "Dry Volume Color", GroupName = "Colors", Order = 23)]
-        public Brush DryVolumeBrush { get; set; }
-
-        [Browsable(false)]
-        public string DryVolumeBrushSerializable
-        {
-            get { return Serialize.BrushToString(DryVolumeBrush); }
-            set { DryVolumeBrush = Serialize.StringToBrush(value); }
-        }
-
-        [XmlIgnore]
-        [Display(Name = "Noise Color", GroupName = "Colors", Order = 24)]
-        public Brush NoiseBrush { get; set; }
-
-        [Browsable(false)]
-        public string NoiseBrushSerializable
-        {
-            get { return Serialize.BrushToString(NoiseBrush); }
-            set { NoiseBrush = Serialize.StringToBrush(value); }
-        }
 
         protected override void OnStateChange()
         {
