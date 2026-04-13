@@ -182,6 +182,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 DecisiveTicks = 2;
                 HTFFastPeriod = 10;
                 HTFSlowPeriod = 21;
+                UsePocketPivotLongOverride = true;
+                PocketPivotLongLookback = 10;
                 MinRoomPoints = 6.0;
 
                 SwitchAfterBars = 20;
@@ -522,6 +524,47 @@ namespace NinjaTrader.NinjaScript.Strategies
             return score >= 2;
         }
 
+        private bool IsPocketPivotBarAgo(int barsAgo)
+        {
+            if (barsAgo < 0 || CurrentBar <= barsAgo + 1)
+                return false;
+
+            bool isUpBar = Close[barsAgo] > Close[barsAgo + 1];
+            if (!isUpBar)
+                return false;
+
+            int lookback = Math.Min(PocketPivotLongLookback, CurrentBar - barsAgo - 1);
+            if (lookback < 1)
+                return false;
+
+            double maxDownVolume = double.NaN;
+            for (int i = barsAgo + 1; i <= barsAgo + lookback; i++)
+            {
+                bool isDownBar = Close[i] < Close[i + 1];
+                if (!isDownBar)
+                    continue;
+
+                if (double.IsNaN(maxDownVolume) || Volume[i] > maxDownVolume)
+                    maxDownVolume = Volume[i];
+            }
+
+            return !double.IsNaN(maxDownVolume) && Volume[barsAgo] > maxDownVolume;
+        }
+
+        private bool RecentPocketPivotLongConfirm()
+        {
+            if (!UsePocketPivotLongOverride)
+                return false;
+
+            int lookback = Math.Min(PocketPivotLongLookback, CurrentBar - 1);
+            for (int i = 1; i <= lookback; i++)
+            {
+                if (IsPocketPivotBarAgo(i))
+                    return true;
+            }
+            return false;
+        }
+
         private double PriorSessionHigh()
         {
             double val = priorDay.PriorHigh[0];
@@ -604,7 +647,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool above10 = Low[1] > sma10[1];
             bool sma10Above21 = sma10[1] > sma21[1];
             if (!above10 || !sma10Above21) return false;
-            if (!HTFTrendAlignedLong()) return false;
+            bool trendConfirmedLong = HTFTrendAlignedLong() || RecentPocketPivotLongConfirm();
+            if (!trendConfirmedLong) return false;
 
             bool last3Above = Low[1] > sma10[1] && Low[2] > sma10[2] && Low[3] > sma10[3]
 								&& Low[4] > sma10[4] && Low[5] > sma10[5] && Low[6] > sma10[6] && sma10[6]> sma21[6];
@@ -803,6 +847,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 bool htfLong = canCheckHTF && HTFTrendAlignedLong();
                 bool htfShort = canCheckHTF && HTFTrendAlignedShort();
+                bool pocketPivotLongConfirm = RecentPocketPivotLongConfirm();
+                bool longTrendConfirm = htfLong || pocketPivotLongConfirm;
 
                 double last3High = double.NaN;
                 double longRequired = double.NaN;
@@ -845,17 +891,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 D($"[Diag] {Time[0]} | InRTH={inRTH} | Flat={(Position.MarketPosition == MarketPosition.Flat)} | ArmedL={setupArmedLong} ArmedS={setupArmedShort} | RepriceL={repriceInProgressLong} RepriceS={repriceInProgressShort}");
                 D($"[Diag] Price={px} | SMA10[0]={s10_0:F2} SMA21[0]={s21_0:F2} | SMA10[1]={s10_1:F2} SMA21[1]={s21_1:F2}");
-                D($"[Diag][Long] structure={longStructure} | last3Above={last3Above} | netMoveTicks={(double.IsNaN(netMoveLongTicks) ? "NaN" : netMoveLongTicks.ToString("F2"))} >= {MinSlopeRiseTicks} => {longNetMovePass} | normSlope={(double.IsNaN(slopeScore) ? "NaN" : slopeScore.ToString("F2"))} >= {MinNormalizedSlopeScore:F2} => {longSlopePass} | HTF={htfLong} | takeOut={(double.IsNaN(last3High) ? "NaN" : last3High.ToString("F2"))} >= {(double.IsNaN(longRequired) ? "NaN" : longRequired.ToString("F2"))} => {longTakeoutPass} | room={longRoomPass} (entry={plannedLong:F2}, nextRes={nearestResistanceStr}, min={MinRoomPoints:F2})");
+                D($"[Diag][Long] structure={longStructure} | last3Above={last3Above} | netMoveTicks={(double.IsNaN(netMoveLongTicks) ? "NaN" : netMoveLongTicks.ToString("F2"))} >= {MinSlopeRiseTicks} => {longNetMovePass} | normSlope={(double.IsNaN(slopeScore) ? "NaN" : slopeScore.ToString("F2"))} >= {MinNormalizedSlopeScore:F2} => {longSlopePass} | HTF={htfLong} | pocketPivotLong={pocketPivotLongConfirm} | trendConfirm={longTrendConfirm} | takeOut={(double.IsNaN(last3High) ? "NaN" : last3High.ToString("F2"))} >= {(double.IsNaN(longRequired) ? "NaN" : longRequired.ToString("F2"))} => {longTakeoutPass} | room={longRoomPass} (entry={plannedLong:F2}, nextRes={nearestResistanceStr}, min={MinRoomPoints:F2})");
                 D($"[Diag][Short] structure={shortStructure} | last3Below={last3Below} | netMoveTicks={(double.IsNaN(netMoveShortTicks) ? "NaN" : netMoveShortTicks.ToString("F2"))} >= {MinSlopeRiseTicks} => {shortNetMovePass} | normSlope={(double.IsNaN(slopeScore) ? "NaN" : (-slopeScore).ToString("F2"))} >= {MinNormalizedSlopeScore:F2} => {shortSlopePass} | HTF={htfShort} | takeOut={(double.IsNaN(last3Low) ? "NaN" : last3Low.ToString("F2"))} <= {(double.IsNaN(shortRequired) ? "NaN" : shortRequired.ToString("F2"))} => {shortTakeoutPass} | room={shortRoomPass} (entry={plannedShort:F2}, nextSup={nearestSupportStr}, min={MinRoomPoints:F2})");
 
-                if (!longStructure || !last3Above || !longNetMovePass || !longSlopePass || !htfLong || !longTakeoutPass || !longRoomPass)
+                if (!longStructure || !last3Above || !longNetMovePass || !longSlopePass || !longTrendConfirm || !longTakeoutPass || !longRoomPass)
                 {
                     string whyLong = string.Join(", ", new[] {
                         !longStructure ? "need bullish 2m structure" : null,
                         !last3Above ? "need recent bars holding above SMA10" : null,
                         !longNetMovePass ? $"need SMA10 net move >= {MinSlopeRiseTicks} ticks" : null,
                         !longSlopePass ? $"need normalized slope >= {MinNormalizedSlopeScore:F2}" : null,
-                        !htfLong ? "need bullish 15m alignment" : null,
+                        !longTrendConfirm ? "need bullish 15m alignment or recent pocket pivot" : null,
                         !longTakeoutPass ? "need decisive prior-high takeout" : null,
                         !longRoomPass ? $"need >= {MinRoomPoints:F2} points room to next resistance" : null
                     }.Where(x => x != null));
