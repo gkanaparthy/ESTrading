@@ -2,6 +2,7 @@
 using System;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Linq;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui.Tools;
 using NinjaTrader.Data;
@@ -703,72 +704,120 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double s10_1  = sma10[1];
                 double s21_1  = sma21[1];
 
-                bool canCheck3     = CurrentBar >= 4;
+                bool canCheck3 = CurrentBar >= 6;
                 bool canCheckSlope = CurrentBar >= (SlopeLookbackBars + 2);
-                bool canCheckMono  = CurrentBar >= 6;
-                bool canCheckPHPL  = CurrentBar >= (4 + PriorHighLookback);
+                bool canCheckPHPL = CurrentBar >= (4 + PriorHighLookback);
+                bool canCheckHTF = BarsArray.Length >= 2 && CurrentBars[1] >= Math.Max(HTFFastPeriod, HTFSlowPeriod) + 3;
 
-                bool longStructure  = canCheck3 && (Low[1] > s10_1 && s10_1 > s21_1);
+                bool longStructure = canCheck3 && (Low[1] > s10_1 && s10_1 > s21_1);
                 bool shortStructure = canCheck3 && (High[1] < s10_1 && s10_1 < s21_1);
 
                 bool last3Above = canCheck3 &&
-                                  (Low[1] > sma10[1] && Low[2] > sma10[2] && Low[3] > sma10[3]);
+                                  (Low[1] > sma10[1] && Low[2] > sma10[2] && Low[3] > sma10[3] &&
+                                   Low[4] > sma10[4] && Low[5] > sma10[5] && Low[6] > sma10[6] && sma10[6] > sma21[6]);
                 bool last3Below = canCheck3 &&
-                                  (High[1] < sma10[1] && High[2] < sma10[2] && High[3] < sma10[3]);
+                                  (High[1] < sma10[1] && High[2] < sma10[2] && High[3] < sma10[3] &&
+                                   High[4] < sma10[4] && High[5] < sma10[5] && High[6] < sma10[6] && sma10[6] < sma21[6]);
 
-                bool monoUp   = canCheckMono &&
-                                (sma10[1] > sma10[2] && sma10[2] > sma10[3] && sma10[3] > sma10[4] && sma10[4] > sma10[5]);
-                bool monoDown = canCheckMono &&
-                                (sma10[1] < sma10[2] && sma10[2] < sma10[3] && sma10[3] < sma10[4] && sma10[4] < sma10[5]);
-
-                double minAbs = MinSlopeRiseTicks * TickSize;
-                string slopeLongStr = "n/a";
-                string slopeShortStr = "n/a";
+                double netMoveLongTicks = double.NaN;
+                double netMoveShortTicks = double.NaN;
+                double slopeScore = double.NaN;
+                bool longNetMovePass = false;
+                bool shortNetMovePass = false;
+                bool longSlopePass = false;
+                bool shortSlopePass = false;
                 if (canCheckSlope)
                 {
                     double netRise = sma10[1] - sma10[SlopeLookbackBars + 1];
                     double netFall = sma10[SlopeLookbackBars + 1] - sma10[1];
-                    slopeLongStr  = $"{netRise:F2} {(netRise >= minAbs ? ">=" : "<")} {minAbs:F2}";
-                    slopeShortStr = $"{netFall:F2} {(netFall >= minAbs ? ">=" : "<")} {minAbs:F2}";
+                    netMoveLongTicks = netRise / TickSize;
+                    netMoveShortTicks = netFall / TickSize;
+                    slopeScore = NormalizedSlopeScore();
+                    longNetMovePass = netMoveLongTicks >= MinSlopeRiseTicks;
+                    shortNetMovePass = netMoveShortTicks >= MinSlopeRiseTicks;
+                    longSlopePass = !double.IsNaN(slopeScore) && slopeScore >= MinNormalizedSlopeScore;
+                    shortSlopePass = !double.IsNaN(slopeScore) && (-slopeScore) >= MinNormalizedSlopeScore;
                 }
 
-                string takeoutPH = "n/a";
-                string takeoutPL = "n/a";
+                bool htfLong = canCheckHTF && HTFTrendAlignedLong();
+                bool htfShort = canCheckHTF && HTFTrendAlignedShort();
+
+                double last3High = double.NaN;
+                double longRequired = double.NaN;
+                bool longTakeoutPass = false;
+                double last3Low = double.NaN;
+                double shortRequired = double.NaN;
+                bool shortTakeoutPass = false;
                 if (canCheckPHPL)
                 {
-                    double last3High = Math.Max(High[1], Math.Max(High[2], High[3]));
+                    last3High = Math.Max(High[1], Math.Max(High[2], High[3]));
                     double priorHigh = double.MinValue;
                     for (int i = 4; i <= 3 + PriorHighLookback; i++)
                         priorHigh = Math.Max(priorHigh, High[i]);
-                    double reqH = priorHigh + DecisiveTicks * TickSize;
-                    takeoutPH = $"{last3High:F2} {(last3High >= reqH ? ">=" : "<")} req {reqH:F2}";
+                    longRequired = priorHigh + DecisiveTicks * TickSize;
+                    longTakeoutPass = last3High >= longRequired;
 
-                    double last3Low = Math.Min(Low[1], Math.Min(Low[2], Low[3]));
+                    last3Low = Math.Min(Low[1], Math.Min(Low[2], Low[3]));
                     double priorLow = double.MaxValue;
                     for (int i = 4; i <= 3 + PriorHighLookback; i++)
                         priorLow = Math.Min(priorLow, Low[i]);
-                    double reqL = priorLow - DecisiveTicks * TickSize;
-                    takeoutPL = $"{last3Low:F2} {(last3Low <= reqL ? "<=" : ">")} req {reqL:F2}";
+                    shortRequired = priorLow - DecisiveTicks * TickSize;
+                    shortTakeoutPass = last3Low <= shortRequired;
                 }
 
-                D($"[Diag] {Time[0]} | InRTH={inRTH} | Flat={(Position.MarketPosition == MarketPosition.Flat)} " +
-                  $"| ArmedL={setupArmedLong} ArmedS={setupArmedShort} | RepriceL={repriceInProgressLong} RepriceS={repriceInProgressShort}");
+                double plannedLong = usingSMA21EntryPriceLong ? sma21[0] : sma10[0];
+                double plannedShort = usingSMA21EntryPriceShort ? sma21[0] : sma10[0];
+                double[] levels = new double[] { PriorSessionHigh(), PriorSessionLow(), CurrentSessionHigh(), CurrentSessionLow() };
+                double nearestResistance = double.MaxValue;
+                double nearestSupport = double.MinValue;
+                foreach (double level in levels)
+                {
+                    if (double.IsNaN(level)) continue;
+                    if (level > plannedLong && level < nearestResistance) nearestResistance = level;
+                    if (level < plannedShort && level > nearestSupport) nearestSupport = level;
+                }
+                bool longRoomPass = nearestResistance == double.MaxValue || (nearestResistance - plannedLong) >= MinRoomPoints;
+                bool shortRoomPass = nearestSupport == double.MinValue || (plannedShort - nearestSupport) >= MinRoomPoints;
+                string nearestResistanceStr = nearestResistance == double.MaxValue ? "none" : nearestResistance.ToString("F2");
+                string nearestSupportStr = nearestSupport == double.MinValue ? "none" : nearestSupport.ToString("F2");
 
+                D($"[Diag] {Time[0]} | InRTH={inRTH} | Flat={(Position.MarketPosition == MarketPosition.Flat)} | ArmedL={setupArmedLong} ArmedS={setupArmedShort} | RepriceL={repriceInProgressLong} RepriceS={repriceInProgressShort}");
                 D($"[Diag] Price={px} | SMA10[0]={s10_0:F2} SMA21[0]={s21_0:F2} | SMA10[1]={s10_1:F2} SMA21[1]={s21_1:F2}");
+                D($"[Diag][Long] structure={longStructure} | last3Above={last3Above} | netMoveTicks={(double.IsNaN(netMoveLongTicks) ? "NaN" : netMoveLongTicks.ToString("F2"))} >= {MinSlopeRiseTicks} => {longNetMovePass} | normSlope={(double.IsNaN(slopeScore) ? "NaN" : slopeScore.ToString("F2"))} >= {MinNormalizedSlopeScore:F2} => {longSlopePass} | HTF={htfLong} | takeOut={(double.IsNaN(last3High) ? "NaN" : last3High.ToString("F2"))} >= {(double.IsNaN(longRequired) ? "NaN" : longRequired.ToString("F2"))} => {longTakeoutPass} | room={longRoomPass} (entry={plannedLong:F2}, nextRes={nearestResistanceStr}, min={MinRoomPoints:F2})");
+                D($"[Diag][Short] structure={shortStructure} | last3Below={last3Below} | netMoveTicks={(double.IsNaN(netMoveShortTicks) ? "NaN" : netMoveShortTicks.ToString("F2"))} >= {MinSlopeRiseTicks} => {shortNetMovePass} | normSlope={(double.IsNaN(slopeScore) ? "NaN" : (-slopeScore).ToString("F2"))} >= {MinNormalizedSlopeScore:F2} => {shortSlopePass} | HTF={htfShort} | takeOut={(double.IsNaN(last3Low) ? "NaN" : last3Low.ToString("F2"))} <= {(double.IsNaN(shortRequired) ? "NaN" : shortRequired.ToString("F2"))} => {shortTakeoutPass} | room={shortRoomPass} (entry={plannedShort:F2}, nextSup={nearestSupportStr}, min={MinRoomPoints:F2})");
 
-                D($"[Diag][Long] structure(Low[1]>SMA10[1] && SMA10[1]>SMA21[1])={longStructure} " +
-                  $"last3Above={last3Above} monoUp={monoUp} slope={slopeLongStr} takeOutPH={takeoutPH}");
+                if (!longStructure || !last3Above || !longNetMovePass || !longSlopePass || !htfLong || !longTakeoutPass || !longRoomPass)
+                {
+                    string whyLong = string.Join(", ", new[] {
+                        !longStructure ? "need bullish 2m structure" : null,
+                        !last3Above ? "need recent bars holding above SMA10" : null,
+                        !longNetMovePass ? $"need SMA10 net move >= {MinSlopeRiseTicks} ticks" : null,
+                        !longSlopePass ? $"need normalized slope >= {MinNormalizedSlopeScore:F2}" : null,
+                        !htfLong ? "need bullish 15m alignment" : null,
+                        !longTakeoutPass ? "need decisive prior-high takeout" : null,
+                        !longRoomPass ? $"need >= {MinRoomPoints:F2} points room to next resistance" : null
+                    }.Where(x => x != null));
+                    D($"[Diag][Long][Blocked] {whyLong}");
+                }
+                else D("[Diag][Long][Ready] all long conditions met");
 
-                D($"[Diag][Short] structure(High[1]<SMA10[1] && SMA10[1]<SMA21[1])={shortStructure} " +
-                  $"last3Below={last3Below} monoDown={monoDown} slope={slopeShortStr} takeOutPL={takeoutPL}");
+                if (!shortStructure || !last3Below || !shortNetMovePass || !shortSlopePass || !htfShort || !shortTakeoutPass || !shortRoomPass)
+                {
+                    string whyShort = string.Join(", ", new[] {
+                        !shortStructure ? "need bearish 2m structure" : null,
+                        !last3Below ? "need recent bars holding below SMA10" : null,
+                        !shortNetMovePass ? $"need SMA10 net move >= {MinSlopeRiseTicks} ticks" : null,
+                        !shortSlopePass ? $"need normalized slope >= {MinNormalizedSlopeScore:F2}" : null,
+                        !htfShort ? "need bearish 15m alignment" : null,
+                        !shortTakeoutPass ? "need decisive prior-low takeout" : null,
+                        !shortRoomPass ? $"need >= {MinRoomPoints:F2} points room to next support" : null
+                    }.Where(x => x != null));
+                    D($"[Diag][Short][Blocked] {whyShort}");
+                }
+                else D("[Diag][Short][Ready] all short conditions met");
 
-                D($"[Diag] Switch: barsAbove10={barsAbove10SinceOrder} usingSMA21L={usingSMA21EntryPriceLong} | " +
-                  $"barsBelow10={barsBelow10SinceOrder} usingSMA21S={usingSMA21EntryPriceShort}");
-
-                D($"[Diag] Trail: activeL={trailActiveLong} enabledL={trailingEnabledLong} curSL_L={(double.IsNaN(trailCurrentSL_Long) ? double.NaN : trailCurrentSL_Long)} | " +
-                  $"activeS={trailActiveShort} enabledS={trailingEnabledShort} curSL_S={(double.IsNaN(trailCurrentSL_Short) ? double.NaN : trailCurrentSL_Short)}");
-
-                // ADD: show halting state
+                D($"[Diag] Switch: barsAbove10={barsAbove10SinceOrder} usingSMA21L={usingSMA21EntryPriceLong} | barsBelow10={barsBelow10SinceOrder} usingSMA21S={usingSMA21EntryPriceShort}");
+                D($"[Diag] Trail: activeL={trailActiveLong} enabledL={trailingEnabledLong} curSL_L={(double.IsNaN(trailCurrentSL_Long) ? double.NaN : trailCurrentSL_Long)} | activeS={trailActiveShort} enabledS={trailingEnabledShort} curSL_S={(double.IsNaN(trailCurrentSL_Short) ? double.NaN : trailCurrentSL_Short)}");
                 D($"[Diag][Halt] sessionHalted={sessionTradingHalted} consecutiveFullLossFamilies={consecutiveFullLossFamilies}");
             }
             catch (Exception ex)
