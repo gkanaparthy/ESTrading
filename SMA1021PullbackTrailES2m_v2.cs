@@ -524,24 +524,32 @@ namespace NinjaTrader.NinjaScript.Strategies
             return score >= 2;
         }
 
+        private bool IsUpBarByPrevClose(int barsAgo)
+        {
+            return barsAgo >= 0 && CurrentBar > barsAgo && Close[barsAgo] > Close[barsAgo + 1];
+        }
+
+        private bool IsDownBarByPrevClose(int barsAgo)
+        {
+            return barsAgo >= 0 && CurrentBar > barsAgo && Close[barsAgo] < Close[barsAgo + 1];
+        }
+
         private bool IsPocketPivotBarAgo(int barsAgo)
         {
-            if (barsAgo < 0 || CurrentBar <= barsAgo + 1)
+            if (barsAgo < 1 || CurrentBar <= barsAgo + 1)
                 return false;
 
-            bool isUpBar = Close[barsAgo] > Close[barsAgo + 1];
-            if (!isUpBar)
+            if (!IsUpBarByPrevClose(barsAgo))
                 return false;
 
-            int lookback = Math.Min(PocketPivotLongLookback, CurrentBar - barsAgo - 1);
+            int lookback = Math.Min(PocketPivotLongLookback, CurrentBar - barsAgo);
             if (lookback < 1)
                 return false;
 
             double maxDownVolume = double.NaN;
             for (int i = barsAgo + 1; i <= barsAgo + lookback; i++)
             {
-                bool isDownBar = Close[i] < Close[i + 1];
-                if (!isDownBar)
+                if (!IsDownBarByPrevClose(i))
                     continue;
 
                 if (double.IsNaN(maxDownVolume) || Volume[i] > maxDownVolume)
@@ -553,7 +561,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private bool RecentPocketPivotLongConfirm()
         {
-            if (!UsePocketPivotLongOverride)
+            if (!UsePocketPivotLongOverride || CurrentBar < 3)
                 return false;
 
             int lookback = Math.Min(PocketPivotLongLookback, CurrentBar - 1);
@@ -891,7 +899,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 D($"[Diag] {Time[0]} | InRTH={inRTH} | Flat={(Position.MarketPosition == MarketPosition.Flat)} | ArmedL={setupArmedLong} ArmedS={setupArmedShort} | RepriceL={repriceInProgressLong} RepriceS={repriceInProgressShort}");
                 D($"[Diag] Price={px} | SMA10[0]={s10_0:F2} SMA21[0]={s21_0:F2} | SMA10[1]={s10_1:F2} SMA21[1]={s21_1:F2}");
-                D($"[Diag][Long] structure={longStructure} | last3Above={last3Above} | netMoveTicks={(double.IsNaN(netMoveLongTicks) ? "NaN" : netMoveLongTicks.ToString("F2"))} >= {MinSlopeRiseTicks} => {longNetMovePass} | normSlope={(double.IsNaN(slopeScore) ? "NaN" : slopeScore.ToString("F2"))} >= {MinNormalizedSlopeScore:F2} => {longSlopePass} | HTF={htfLong} | pocketPivotLong={pocketPivotLongConfirm} | trendConfirm={longTrendConfirm} | takeOut={(double.IsNaN(last3High) ? "NaN" : last3High.ToString("F2"))} >= {(double.IsNaN(longRequired) ? "NaN" : longRequired.ToString("F2"))} => {longTakeoutPass} | room={longRoomPass} (entry={plannedLong:F2}, nextRes={nearestResistanceStr}, min={MinRoomPoints:F2})");
+                D($"[Diag][Long] structure={longStructure} | last3Above={last3Above} | netMoveTicks={(double.IsNaN(netMoveLongTicks) ? "NaN" : netMoveLongTicks.ToString("F2"))} >= {MinSlopeRiseTicks} => {longNetMovePass} | normSlope={(double.IsNaN(slopeScore) ? "NaN" : slopeScore.ToString("F2"))} >= {MinNormalizedSlopeScore:F2} => {longSlopePass} | HTF={htfLong} | recentPocketPivotLong={pocketPivotLongConfirm} | trendConfirm={longTrendConfirm} | takeOut={(double.IsNaN(last3High) ? "NaN" : last3High.ToString("F2"))} >= {(double.IsNaN(longRequired) ? "NaN" : longRequired.ToString("F2"))} => {longTakeoutPass} | room={longRoomPass} (entry={plannedLong:F2}, nextRes={nearestResistanceStr}, min={MinRoomPoints:F2})");
                 D($"[Diag][Short] structure={shortStructure} | last3Below={last3Below} | netMoveTicks={(double.IsNaN(netMoveShortTicks) ? "NaN" : netMoveShortTicks.ToString("F2"))} >= {MinSlopeRiseTicks} => {shortNetMovePass} | normSlope={(double.IsNaN(slopeScore) ? "NaN" : (-slopeScore).ToString("F2"))} >= {MinNormalizedSlopeScore:F2} => {shortSlopePass} | HTF={htfShort} | takeOut={(double.IsNaN(last3Low) ? "NaN" : last3Low.ToString("F2"))} <= {(double.IsNaN(shortRequired) ? "NaN" : shortRequired.ToString("F2"))} => {shortTakeoutPass} | room={shortRoomPass} (entry={plannedShort:F2}, nextSup={nearestSupportStr}, min={MinRoomPoints:F2})");
 
                 if (!longStructure || !last3Above || !longNetMovePass || !longSlopePass || !longTrendConfirm || !longTakeoutPass || !longRoomPass)
@@ -901,7 +909,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         !last3Above ? "need recent bars holding above SMA10" : null,
                         !longNetMovePass ? $"need SMA10 net move >= {MinSlopeRiseTicks} ticks" : null,
                         !longSlopePass ? $"need normalized slope >= {MinNormalizedSlopeScore:F2}" : null,
-                        !longTrendConfirm ? "need bullish 15m alignment or recent pocket pivot" : null,
+                        !longTrendConfirm ? "need bullish 15m alignment or recent prior pocket pivot" : null,
                         !longTakeoutPass ? "need decisive prior-high takeout" : null,
                         !longRoomPass ? $"need >= {MinRoomPoints:F2} points room to next resistance" : null
                     }.Where(x => x != null));
