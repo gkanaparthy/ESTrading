@@ -65,6 +65,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int SwitchAfterBars { get; set; }
 
         [Range(1, int.MaxValue), NinjaScriptProperty]
+        [Display(Name = "Max armed bars before cancel", GroupName = "Order Mgmt", Order = 21)]
+        public int MaxArmedBars { get; set; }
+
+        [Range(1, int.MaxValue), NinjaScriptProperty]
         [Display(Name = "Stop (ticks)", GroupName = "Risk", Order = 30)]
         public int StopTicks { get; set; }
 
@@ -101,6 +105,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool usingSMA21EntryPriceLong;
         private double pendingRepriceToLong;
         private bool repriceInProgressLong;
+        private int totalBarsArmedLong;
+        private double pendingTrailTriggerLowLong = double.NaN;
 
         // State (short)
         private bool setupArmedShort;
@@ -111,6 +117,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool usingSMA21EntryPriceShort;
         private double pendingRepriceToShort;
         private bool repriceInProgressShort;
+        private int totalBarsArmedShort;
+        private double pendingTrailTriggerHighShort = double.NaN;
 
         // Signal names
         private const string SigPT_L    = "L_PT";
@@ -177,6 +185,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MinRoomPoints = 6.0;
 
                 SwitchAfterBars = 20;
+                MaxArmedBars = 40;
 
                 StopTicks = 8;
                 ProfitTicks = 16;
@@ -213,6 +222,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 repriceInProgressLong = repriceInProgressShort = false;
 
                 barsAbove10SinceOrder = barsBelow10SinceOrder = 0;
+                totalBarsArmedLong = totalBarsArmedShort = 0;
 				trailEntryPriceLong = double.NaN;
 				trailEntryPriceShort = double.NaN;
 
@@ -313,28 +323,44 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ResetFamilyTracking();
 			}
 
-            // Manage trailing stops on bar close conditions
+            // Manage trailing stops on bar close conditions with confirmation-bar anchor
             if (IsFirstTickOfBar)
             {
-                if (trailActiveLong && trailingEnabledLong && Close[1] < sma10[1])
+                if (trailActiveLong && trailingEnabledLong)
                 {
-                    double candidate = Instrument.MasterInstrument.RoundToTickSize(Low[1] - TickSize);
-                    if (double.IsNaN(trailCurrentSL_Long) || candidate > trailCurrentSL_Long)
+                    if (Close[1] < sma10[1])
                     {
-                        SetStopLoss(SigTrail_L, CalculationMode.Price, candidate, false);
-                        trailCurrentSL_Long = candidate;
-                        D($"[Long] Trail stop tightened to {candidate} after close below SMA10 (post-PT).");
+                        double triggerLow = Instrument.MasterInstrument.RoundToTickSize(Low[1] - TickSize);
+                        if (double.IsNaN(pendingTrailTriggerLowLong) || triggerLow > pendingTrailTriggerLowLong)
+                        {
+                            pendingTrailTriggerLowLong = triggerLow;
+                            D($"[Long] Trail trigger candle detected below SMA10. Future protective low set to {pendingTrailTriggerLowLong}.");
+                        }
+                    }
+                    if (!double.IsNaN(pendingTrailTriggerLowLong) && (double.IsNaN(trailCurrentSL_Long) || pendingTrailTriggerLowLong > trailCurrentSL_Long))
+                    {
+                        SetStopLoss(SigTrail_L, CalculationMode.Price, pendingTrailTriggerLowLong, false);
+                        trailCurrentSL_Long = pendingTrailTriggerLowLong;
+                        D($"[Long] Trail stop tightened to trigger-bar low {pendingTrailTriggerLowLong} after SMA10 confirmation break.");
                     }
                 }
 
-                if (trailActiveShort && trailingEnabledShort && Close[1] > sma10[1])
+                if (trailActiveShort && trailingEnabledShort)
                 {
-                    double candidate = Instrument.MasterInstrument.RoundToTickSize(High[1] + TickSize);
-                    if (double.IsNaN(trailCurrentSL_Short) || candidate < trailCurrentSL_Short)
+                    if (Close[1] > sma10[1])
                     {
-                        SetStopLoss(SigTrail_S, CalculationMode.Price, candidate, false);
-                        trailCurrentSL_Short = candidate;
-                        D($"[Short] Trail stop tightened to {candidate} after close above SMA10 (post-PT).");
+                        double triggerHigh = Instrument.MasterInstrument.RoundToTickSize(High[1] + TickSize);
+                        if (double.IsNaN(pendingTrailTriggerHighShort) || triggerHigh < pendingTrailTriggerHighShort)
+                        {
+                            pendingTrailTriggerHighShort = triggerHigh;
+                            D($"[Short] Trail trigger candle detected above SMA10. Future protective high set to {pendingTrailTriggerHighShort}.");
+                        }
+                    }
+                    if (!double.IsNaN(pendingTrailTriggerHighShort) && (double.IsNaN(trailCurrentSL_Short) || pendingTrailTriggerHighShort < trailCurrentSL_Short))
+                    {
+                        SetStopLoss(SigTrail_S, CalculationMode.Price, pendingTrailTriggerHighShort, false);
+                        trailCurrentSL_Short = pendingTrailTriggerHighShort;
+                        D($"[Short] Trail stop tightened to trigger-bar high {pendingTrailTriggerHighShort} after SMA10 confirmation break.");
                     }
                 }
             }
@@ -357,11 +383,22 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 if (IsFirstTickOfBar)
                 {
+                    totalBarsArmedLong++;
                     if (Low[1] > sma10[1]) barsAbove10SinceOrder++;
                     else barsAbove10SinceOrder = 0;
 
                     bool structureOkL = Close[1] > sma10[1] && sma10[1] > sma21[1];
-                    if (!structureOkL)
+                    if (totalBarsArmedLong >= MaxArmedBars)
+                    {
+                        D($"[Long] Setup timed out after {MaxArmedBars} bars. Canceling working entries.");
+                        CancelWorkingEntryOrdersLong();
+                        setupArmedLong = false;
+                        usingSMA21EntryPriceLong = false;
+                        barsAbove10SinceOrder = 0;
+                        totalBarsArmedLong = 0;
+                        totalBarsArmedLong = 0;
+                    }
+                    else if (!structureOkL)
                     {
                         D("[Long] Setup invalidated; canceling working entries.");
                         CancelWorkingEntryOrdersLong();
@@ -387,11 +424,22 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 if (IsFirstTickOfBar)
                 {
+                    totalBarsArmedShort++;
                     if (High[1] < sma10[1]) barsBelow10SinceOrder++;
                     else barsBelow10SinceOrder = 0;
 
                     bool structureOkS = Close[1] < sma10[1] && sma10[1] < sma21[1];
-                    if (!structureOkS)
+                    if (totalBarsArmedShort >= MaxArmedBars)
+                    {
+                        D($"[Short] Setup timed out after {MaxArmedBars} bars. Canceling working entries.");
+                        CancelWorkingEntryOrdersShort();
+                        setupArmedShort = false;
+                        usingSMA21EntryPriceShort = false;
+                        barsBelow10SinceOrder = 0;
+                        totalBarsArmedShort = 0;
+                        totalBarsArmedShort = 0;
+                    }
+                    else if (!structureOkS)
                     {
                         D("[Short] Setup invalidated; canceling working entries.");
                         CancelWorkingEntryOrdersShort();
@@ -419,6 +467,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     double entryPriceL = Instrument.MasterInstrument.RoundToTickSize(sma10[0]);
                     usingSMA21EntryPriceLong = false;
                     barsAbove10SinceOrder = 0;
+                    totalBarsArmedLong = 0;
                     SubmitTwoLongLimits(entryPriceL);
                     setupArmedLong = true;
 
@@ -437,6 +486,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     double entryPriceS = Instrument.MasterInstrument.RoundToTickSize(sma10[0]);
                     usingSMA21EntryPriceShort = false;
                     barsBelow10SinceOrder = 0;
+                    totalBarsArmedShort = 0;
                     SubmitTwoShortLimits(entryPriceS);
                     setupArmedShort = true;
 
@@ -455,19 +505,21 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool HTFTrendAlignedLong()
         {
             if (BarsArray.Length < 2 || CurrentBars[1] < Math.Max(HTFFastPeriod, HTFSlowPeriod) + 3) return false;
-            bool fastAboveSlow = htfEmaFast[1] > htfEmaSlow[1];
-            bool fastSlopePositive = htfEmaFast[1] > htfEmaFast[2];
-            bool closeAboveSlow = Closes[1][1] > htfEmaSlow[1];
-            return fastAboveSlow && fastSlopePositive && closeAboveSlow;
+            int score = 0;
+            if (htfEmaFast[1] > htfEmaSlow[1]) score++;
+            if (htfEmaFast[1] > htfEmaFast[2]) score++;
+            if (Closes[1][1] > htfEmaSlow[1]) score++;
+            return score >= 2;
         }
 
         private bool HTFTrendAlignedShort()
         {
             if (BarsArray.Length < 2 || CurrentBars[1] < Math.Max(HTFFastPeriod, HTFSlowPeriod) + 3) return false;
-            bool fastBelowSlow = htfEmaFast[1] < htfEmaSlow[1];
-            bool fastSlopeNegative = htfEmaFast[1] < htfEmaFast[2];
-            bool closeBelowSlow = Closes[1][1] < htfEmaSlow[1];
-            return fastBelowSlow && fastSlopeNegative && closeBelowSlow;
+            int score = 0;
+            if (htfEmaFast[1] < htfEmaSlow[1]) score++;
+            if (htfEmaFast[1] < htfEmaFast[2]) score++;
+            if (Closes[1][1] < htfEmaSlow[1]) score++;
+            return score >= 2;
         }
 
         private double PriorSessionHigh()
@@ -602,6 +654,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             return true;
         }
 
+        private int GetAdaptiveStopTicks()
+        {
+            double atrTicks = atr == null || atr[0] <= 0 ? StopTicks : atr[0] / TickSize;
+            return Math.Max(6, Math.Min(14, (int)Math.Round(atrTicks)));
+        }
+
         private void SubmitTwoLongLimits(double entryPrice)
         {
             int total = Math.Max(2, TradeSize);
@@ -609,10 +667,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             int qTrail = Math.Max(1, total - qPT);
 
             trailingEnabledLong = false;
+            int adaptiveStopTicks = GetAdaptiveStopTicks();
 
-            SetStopLoss(SigPT_L, CalculationMode.Ticks, StopTicks, false);
+            SetStopLoss(SigPT_L, CalculationMode.Ticks, adaptiveStopTicks, false);
             SetProfitTarget(SigPT_L, CalculationMode.Ticks, ProfitTicks);
-            SetStopLoss(SigTrail_L, CalculationMode.Ticks, StopTicks, false);
+            SetStopLoss(SigTrail_L, CalculationMode.Ticks, adaptiveStopTicks, false);
+            D($"[Long] Initial adaptive stop set to {adaptiveStopTicks} ticks (ATR-based).");
 
             EnterLongLimit(0, true, qPT, entryPrice, SigPT_L);
             EnterLongLimit(0, true, qTrail, entryPrice, SigTrail_L);
@@ -625,10 +685,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             int qTrail = Math.Max(1, total - qPT);
 
             trailingEnabledShort = false;
+            int adaptiveStopTicks = GetAdaptiveStopTicks();
 
-            SetStopLoss(SigPT_S, CalculationMode.Ticks, StopTicks, false);
+            SetStopLoss(SigPT_S, CalculationMode.Ticks, adaptiveStopTicks, false);
             SetProfitTarget(SigPT_S, CalculationMode.Ticks, ProfitTicks);
-            SetStopLoss(SigTrail_S, CalculationMode.Ticks, StopTicks, false);
+            SetStopLoss(SigTrail_S, CalculationMode.Ticks, adaptiveStopTicks, false);
+            D($"[Short] Initial adaptive stop set to {adaptiveStopTicks} ticks (ATR-based).");
 
             EnterShortLimit(0, true, qPT, entryPrice, SigPT_S);
             EnterShortLimit(0, true, qTrail, entryPrice, SigTrail_S);
@@ -816,7 +878,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
                 else D("[Diag][Short][Ready] all short conditions met");
 
-                D($"[Diag] Switch: barsAbove10={barsAbove10SinceOrder} usingSMA21L={usingSMA21EntryPriceLong} | barsBelow10={barsBelow10SinceOrder} usingSMA21S={usingSMA21EntryPriceShort}");
+                D($"[Diag] Switch: barsAbove10={barsAbove10SinceOrder} totalArmedL={totalBarsArmedLong} usingSMA21L={usingSMA21EntryPriceLong} | barsBelow10={barsBelow10SinceOrder} totalArmedS={totalBarsArmedShort} usingSMA21S={usingSMA21EntryPriceShort} | maxArmed={MaxArmedBars} | adaptiveStopTicks={GetAdaptiveStopTicks()}");
                 D($"[Diag] Trail: activeL={trailActiveLong} enabledL={trailingEnabledLong} curSL_L={(double.IsNaN(trailCurrentSL_Long) ? double.NaN : trailCurrentSL_Long)} | activeS={trailActiveShort} enabledS={trailingEnabledShort} curSL_S={(double.IsNaN(trailCurrentSL_Short) ? double.NaN : trailCurrentSL_Short)}");
                 D($"[Diag][Halt] sessionHalted={sessionTradingHalted} consecutiveFullLossFamilies={consecutiveFullLossFamilies}");
             }
@@ -874,7 +936,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double ep = execution.Order.AverageFillPrice == 0 ? price : execution.Order.AverageFillPrice;
 
                 trailEntryPriceLong = Instrument.MasterInstrument.RoundToTickSize(ep);
-                trailCurrentSL_Long = Instrument.MasterInstrument.RoundToTickSize(ep - StopTicks * TickSize);
+                trailCurrentSL_Long = Instrument.MasterInstrument.RoundToTickSize(ep - GetAdaptiveStopTicks() * TickSize);
+                pendingTrailTriggerLowLong = double.NaN;
                 D($"[Long] L_Trail filled @ {ep}. Initial SL ~ {trailCurrentSL_Long}. Trailing disabled until PT hit.");
                 setupArmedLong = false;
                 barsAbove10SinceOrder = 0;
@@ -889,7 +952,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double ep = execution.Order.AverageFillPrice == 0 ? price : execution.Order.AverageFillPrice;
 
                 trailEntryPriceShort = Instrument.MasterInstrument.RoundToTickSize(ep);
-                trailCurrentSL_Short = Instrument.MasterInstrument.RoundToTickSize(ep + StopTicks * TickSize);
+                trailCurrentSL_Short = Instrument.MasterInstrument.RoundToTickSize(ep + GetAdaptiveStopTicks() * TickSize);
+                pendingTrailTriggerHighShort = double.NaN;
                 D($"[Short] S_Trail filled @ {ep}. Initial SL ~ {trailCurrentSL_Short}. Trailing disabled until PT hit.");
                 setupArmedShort = false;
                 barsBelow10SinceOrder = 0;
@@ -964,6 +1028,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 trailActiveLong = false;
                 trailingEnabledLong = false;
                 trailCurrentSL_Long = double.NaN;
+                pendingTrailTriggerLowLong = double.NaN;
                 D("[Long] L_Trail exit detected; trail state cleared.");
 
                 // If both legs have closed for this family, evaluate outcome
@@ -992,6 +1057,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 trailActiveShort = false;
                 trailingEnabledShort = false;
                 trailCurrentSL_Short = double.NaN;
+                pendingTrailTriggerHighShort = double.NaN;
                 D("[Short] S_Trail exit detected; trail state cleared.");
 
                 if (ptLegClosedShort && trailLegClosedShort && familyOpenShort)
