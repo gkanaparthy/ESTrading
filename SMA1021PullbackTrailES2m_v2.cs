@@ -778,10 +778,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             trailingEnabledLong = false;
             int adaptiveStopTicks = GetAdaptiveStopTicks();
 
+            int adaptiveProfitTicks = adaptiveStopTicks * 2;
             SetStopLoss(SigPT_L, CalculationMode.Ticks, adaptiveStopTicks, false);
-            SetProfitTarget(SigPT_L, CalculationMode.Ticks, ProfitTicks);
+            SetProfitTarget(SigPT_L, CalculationMode.Ticks, adaptiveProfitTicks);
             SetStopLoss(SigTrail_L, CalculationMode.Ticks, adaptiveStopTicks, false);
-            D($"[Long] Initial adaptive stop set to {adaptiveStopTicks} ticks (ATR-based).");
+            D($"[Long] Initial adaptive stop set to {adaptiveStopTicks} ticks (ATR-based). PT leg target set to {adaptiveProfitTicks} ticks (2R).");
 
             EnterLongLimit(0, true, qPT, entryPrice, SigPT_L);
             EnterLongLimit(0, true, qTrail, entryPrice, SigTrail_L);
@@ -796,10 +797,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             trailingEnabledShort = false;
             int adaptiveStopTicks = GetAdaptiveStopTicks();
 
+            int adaptiveProfitTicks = adaptiveStopTicks * 2;
             SetStopLoss(SigPT_S, CalculationMode.Ticks, adaptiveStopTicks, false);
-            SetProfitTarget(SigPT_S, CalculationMode.Ticks, ProfitTicks);
+            SetProfitTarget(SigPT_S, CalculationMode.Ticks, adaptiveProfitTicks);
             SetStopLoss(SigTrail_S, CalculationMode.Ticks, adaptiveStopTicks, false);
-            D($"[Short] Initial adaptive stop set to {adaptiveStopTicks} ticks (ATR-based).");
+            D($"[Short] Initial adaptive stop set to {adaptiveStopTicks} ticks (ATR-based). PT leg target set to {adaptiveProfitTicks} ticks (2R).");
 
             EnterShortLimit(0, true, qPT, entryPrice, SigPT_S);
             EnterShortLimit(0, true, qTrail, entryPrice, SigTrail_S);
