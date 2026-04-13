@@ -2,14 +2,14 @@
 using System;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
-using System.Globalization;
 using System.Windows.Media;
 using System.Xml.Serialization;
 using NinjaTrader.Data;
-using NinjaTrader.Core.FloatingPoint;
-using NinjaTrader.Gui.Tools;
+using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.Tools;
 using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.DrawingTools;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Indicators
@@ -47,6 +47,61 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Paint price bars", GroupName = "Display", Order = 11)]
         public bool PaintPriceBars { get; set; }
 
+        [XmlIgnore]
+        [Display(Name = "Pocket Pivot Color", GroupName = "Colors", Order = 20)]
+        public Brush PocketPivotBrush { get; set; }
+
+        [Browsable(false)]
+        public string PocketPivotBrushSerializable
+        {
+            get { return Serialize.BrushToString(PocketPivotBrush); }
+            set { PocketPivotBrush = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Up Volume Color", GroupName = "Colors", Order = 21)]
+        public Brush UpVolumeBrush { get; set; }
+
+        [Browsable(false)]
+        public string UpVolumeBrushSerializable
+        {
+            get { return Serialize.BrushToString(UpVolumeBrush); }
+            set { UpVolumeBrush = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Down Volume Color", GroupName = "Colors", Order = 22)]
+        public Brush DownVolumeBrush { get; set; }
+
+        [Browsable(false)]
+        public string DownVolumeBrushSerializable
+        {
+            get { return Serialize.BrushToString(DownVolumeBrush); }
+            set { DownVolumeBrush = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Dry Volume Color", GroupName = "Colors", Order = 23)]
+        public Brush DryVolumeBrush { get; set; }
+
+        [Browsable(false)]
+        public string DryVolumeBrushSerializable
+        {
+            get { return Serialize.BrushToString(DryVolumeBrush); }
+            set { DryVolumeBrush = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Noise Color", GroupName = "Colors", Order = 24)]
+        public Brush NoiseBrush { get; set; }
+
+        [Browsable(false)]
+        public string NoiseBrushSerializable
+        {
+            get { return Serialize.BrushToString(NoiseBrush); }
+            set { NoiseBrush = Serialize.StringToBrush(value); }
+        }
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -69,14 +124,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowVolumeAverage = false;
                 PaintPriceBars = false;
 
-                PocketPivotBrush = Brushes.DodgerBlue;
-                UpVolumeBrush = Brushes.LimeGreen;
-                DownVolumeBrush = Brushes.Red;
-                DryVolumeBrush = Brushes.Orange;
-                NoiseBrush = Brushes.DimGray;
+                PocketPivotBrush = MakeBrush(33, 150, 243);
+                UpVolumeBrush = MakeBrush(34, 171, 148);
+                DownVolumeBrush = MakeBrush(242, 54, 69);
+                DryVolumeBrush = MakeBrush(255, 152, 0);
+                NoiseBrush = MakeBrush(120, 123, 134);
 
-                AddPlot(new Stroke(Brushes.DimGray, 4), PlotStyle.Bar, "VolumeBars");
-                AddPlot(new Stroke(Brushes.SlateGray, 1), PlotStyle.Line, "VolumeAverage");
+                AddPlot(new Stroke(MakeBrush(120, 123, 134), 4), PlotStyle.Bar, "VolumeBars");
+                AddPlot(new Stroke(MakeBrush(144, 164, 174), 1), PlotStyle.Line, "VolumeAverage");
             }
             else if (State == State.DataLoaded)
             {
@@ -85,7 +140,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 downBrush = FreezeClone(DownVolumeBrush);
                 dryBrush = FreezeClone(DryVolumeBrush);
                 noiseBrush = FreezeClone(NoiseBrush);
-                volumeAverageBrush = FreezeClone(Brushes.SlateGray);
+                volumeAverageBrush = FreezeClone(MakeBrush(144, 164, 174));
 
                 Plots[0].Width = 4;
                 Plots[1].Brush = volumeAverageBrush;
@@ -209,6 +264,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             Brush clone = brush.Clone();
             clone.Freeze();
             return clone;
+        }
+
+        private static Brush MakeBrush(byte r, byte g, byte b, byte a = 255)
+        {
+            SolidColorBrush brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
+            brush.Freeze();
+            return brush;
         }
     }
 }
