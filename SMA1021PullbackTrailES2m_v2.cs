@@ -843,7 +843,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private string GetEntryDayModeDiagnostics()
         {
             if (CurrentBar < DayModeLookbackBars + 5)
-                return $"At {Time[0]:h:mm}
+                return $@"At {Time[0]:h:mm}
 • dayMode=None
 • reason=insufficient bars";
 
@@ -883,7 +883,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             double wickiness = wickinessSum / lookback;
             EntryDayMode mode = GetEntryDayMode();
 
-            return $"At {Time[0]:h:mm}
+            return $@"At {Time[0]:h:mm}
 • dayMode={mode}
 • sma10Respect={sma10Respect:F2}
 • sma21Rescue={sma21Rescue:F2}
