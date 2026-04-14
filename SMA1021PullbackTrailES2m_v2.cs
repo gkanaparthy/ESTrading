@@ -1191,7 +1191,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 D($"[Diag] Trail: activeL={trailActiveLong} enabledL={trailingEnabledLong} curSL_L={(double.IsNaN(trailCurrentSL_Long) ? double.NaN : trailCurrentSL_Long)} | activeS={trailActiveShort} enabledS={trailingEnabledShort} curSL_S={(double.IsNaN(trailCurrentSL_Short) ? double.NaN : trailCurrentSL_Short)}");
                 D($"[Diag][Halt] sessionHalted={sessionTradingHalted} consecutiveFullLossFamilies={consecutiveFullLossFamilies}");
                 EntryDayMode currentDayMode = GetEntryDayMode();
-                D($"[Diag][DayMode]
+                D($@"[Diag][DayMode]
 {GetEntryDayModeDiagnostics()}");
                 if (currentDayMode != lastLoggedDayMode)
                 {
