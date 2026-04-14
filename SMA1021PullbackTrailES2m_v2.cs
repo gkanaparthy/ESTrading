@@ -187,6 +187,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool trailLegWasPTHitShort = false;
         private bool ptLegWasFullSL_Short = false;
         private bool trailLegWasFullSL_Short = false;
+        private EntryDayMode lastLoggedDayMode = EntryDayMode.None;
 
         private enum EntryDayMode
         {
@@ -531,6 +532,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     ptLegWasFullSL_Long = trailLegWasFullSL_Long = false;
 
                     D($"[Long] Setup armed. Submitted 2 limit buys at {entryPriceL} (SMA10).");
+                    D($"[Diag][Advisory] dayModeCandidate={GetEntryDayMode()} | current execution still uses existing 10->21 routing logic.");
                     return;
                 }
 
@@ -550,6 +552,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     ptLegWasFullSL_Short = trailLegWasFullSL_Short = false;
 
                     D($"[Short] Setup armed. Submitted 2 limit sells at {entryPriceS} (SMA10).");
+                    D($"[Diag][Advisory] dayModeCandidate={GetEntryDayMode()} | current execution still uses existing 10->21 routing logic.");
                     return;
                 }
             }
@@ -783,6 +786,58 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return EntryDayMode.SMA21;
 
             return EntryDayMode.None;
+        }
+
+        private string GetEntryDayModeReason()
+        {
+            if (CurrentBar < DayModeLookbackBars + 5)
+                return "insufficient bars";
+
+            int lookback = Math.Min(DayModeLookbackBars, CurrentBar - 2);
+            int sma10RespectCount = 0;
+            int sma21RescueCount = 0;
+            int chopCount = 0;
+            double wickinessSum = 0.0;
+
+            for (int i = 1; i <= lookback; i++)
+            {
+                double range = High[i] - Low[i];
+                if (range <= 0)
+                    continue;
+
+                bool above10 = Low[i] > sma10[i];
+                bool through10ButAbove21 = Low[i] <= sma10[i] && Low[i] > sma21[i];
+                bool crossingMess = (High[i] >= sma10[i] && Low[i] <= sma10[i]) && (High[i] >= sma21[i] && Low[i] <= sma21[i]);
+
+                if (above10)
+                    sma10RespectCount++;
+                if (through10ButAbove21)
+                    sma21RescueCount++;
+                if (crossingMess)
+                    chopCount++;
+
+                double bodyTop = Math.Max(Open[i], Close[i]);
+                double bodyBottom = Math.Min(Open[i], Close[i]);
+                double upperWick = High[i] - bodyTop;
+                double lowerWick = bodyBottom - Low[i];
+                wickinessSum += (upperWick + lowerWick) / range;
+            }
+
+            double sma10Respect = (double)sma10RespectCount / lookback;
+            double sma21Rescue = (double)sma21RescueCount / lookback;
+            double chopScore = (double)chopCount / lookback;
+            double wickiness = wickinessSum / lookback;
+
+            if (chopScore >= DayModeChopThreshold)
+                return $"none because chop {chopScore:F2} >= {DayModeChopThreshold:F2}";
+
+            if (sma10Respect >= DayModeSma10RespectThreshold && wickiness <= DayModeWickThreshold)
+                return $"SMA10 because respect {sma10Respect:F2} >= {DayModeSma10RespectThreshold:F2}, wickiness {wickiness:F2} <= {DayModeWickThreshold:F2}, chop {chopScore:F2} < {DayModeChopThreshold:F2}";
+
+            if (sma21Rescue >= DayModeSma21RescueThreshold)
+                return $"SMA21 because rescue {sma21Rescue:F2} >= {DayModeSma21RescueThreshold:F2} while SMA10 respect was weaker and chop {chopScore:F2} < {DayModeChopThreshold:F2}";
+
+            return $"none because chop ok but neither SMA10 respect nor SMA21 rescue reached threshold (respect={sma10Respect:F2}, rescue={sma21Rescue:F2}, wickiness={wickiness:F2})";
         }
 
         private string GetEntryDayModeDiagnostics()
@@ -1128,7 +1183,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 D($"[Diag] Switch: barsAbove10={barsAbove10SinceOrder} totalArmedL={totalBarsArmedLong} usingSMA21L={usingSMA21EntryPriceLong} | barsBelow10={barsBelow10SinceOrder} totalArmedS={totalBarsArmedShort} usingSMA21S={usingSMA21EntryPriceShort} | maxArmed={MaxArmedBars} | adaptiveStopTicks={GetAdaptiveStopTicks()}");
                 D($"[Diag] Trail: activeL={trailActiveLong} enabledL={trailingEnabledLong} curSL_L={(double.IsNaN(trailCurrentSL_Long) ? double.NaN : trailCurrentSL_Long)} | activeS={trailActiveShort} enabledS={trailingEnabledShort} curSL_S={(double.IsNaN(trailCurrentSL_Short) ? double.NaN : trailCurrentSL_Short)}");
                 D($"[Diag][Halt] sessionHalted={sessionTradingHalted} consecutiveFullLossFamilies={consecutiveFullLossFamilies}");
+                EntryDayMode currentDayMode = GetEntryDayMode();
                 D($"[Diag][DayMode] {GetEntryDayModeDiagnostics()}");
+                if (currentDayMode != lastLoggedDayMode)
+                {
+                    D($"[Diag][DayMode][Reason] {GetEntryDayModeReason()}");
+                    lastLoggedDayMode = currentDayMode;
+                }
             }
             catch (Exception ex)
             {
