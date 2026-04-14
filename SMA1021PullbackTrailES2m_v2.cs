@@ -843,7 +843,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private string GetEntryDayModeDiagnostics()
         {
             if (CurrentBar < DayModeLookbackBars + 5)
-                return "dayMode=NONE (insufficient bars)";
+                return $"At {Time[0]:h:mm}
+• dayMode=None
+• reason=insufficient bars";
 
             int lookback = Math.Min(DayModeLookbackBars, CurrentBar - 2);
             int sma10RespectCount = 0;
@@ -881,7 +883,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             double wickiness = wickinessSum / lookback;
             EntryDayMode mode = GetEntryDayMode();
 
-            return $"dayMode={mode} | sma10Respect={sma10Respect:F2} | sma21Rescue={sma21Rescue:F2} | chop={chopScore:F2} | wickiness={wickiness:F2}";
+            return $"At {Time[0]:h:mm}
+• dayMode={mode}
+• sma10Respect={sma10Respect:F2}
+• sma21Rescue={sma21Rescue:F2}
+• chop={chopScore:F2}
+• wickiness={wickiness:F2}";
         }
 
         private double NormalizedSlopeScore()
@@ -1184,7 +1191,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 D($"[Diag] Trail: activeL={trailActiveLong} enabledL={trailingEnabledLong} curSL_L={(double.IsNaN(trailCurrentSL_Long) ? double.NaN : trailCurrentSL_Long)} | activeS={trailActiveShort} enabledS={trailingEnabledShort} curSL_S={(double.IsNaN(trailCurrentSL_Short) ? double.NaN : trailCurrentSL_Short)}");
                 D($"[Diag][Halt] sessionHalted={sessionTradingHalted} consecutiveFullLossFamilies={consecutiveFullLossFamilies}");
                 EntryDayMode currentDayMode = GetEntryDayMode();
-                D($"[Diag][DayMode] {GetEntryDayModeDiagnostics()}");
+                D($"[Diag][DayMode]
+{GetEntryDayModeDiagnostics()}");
                 if (currentDayMode != lastLoggedDayMode)
                 {
                     D($"[Diag][DayMode][Reason] {GetEntryDayModeReason()}");
