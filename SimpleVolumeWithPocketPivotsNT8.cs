@@ -60,6 +60,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [Display(Name = "Up Volume Color", GroupName = "Colors", Order = 21)]
         [Display(Name = "Bearish Pocket Pivot Color", GroupName = "Colors", Order = 21)]
         public Brush BearishPocketPivotBrush { get; set; }
 
@@ -82,6 +83,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [Display(Name = "Down Volume Color", GroupName = "Colors", Order = 22)]
         [Display(Name = "Down Volume Color", GroupName = "Colors", Order = 23)]
         public Brush DownVolumeBrush { get; set; }
 
@@ -93,6 +95,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [Display(Name = "Dry Volume Color", GroupName = "Colors", Order = 23)]
         [Display(Name = "Dry Volume Color", GroupName = "Colors", Order = 24)]
         public Brush DryVolumeBrush { get; set; }
 
@@ -104,6 +107,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         [XmlIgnore]
+        [Display(Name = "Noise Color", GroupName = "Colors", Order = 24)]
         [Display(Name = "Noise Color", GroupName = "Colors", Order = 25)]
         public Brush NoiseBrush { get; set; }
 
