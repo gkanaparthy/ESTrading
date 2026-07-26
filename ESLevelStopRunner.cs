@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Xml.Serialization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -16,7 +17,7 @@ using NinjaTrader.NinjaScript.Indicators;
 
 namespace NinjaTrader.NinjaScript.Strategies
 {
-    public class ESVwapLite : Strategy
+    public class ESLevelStopRunner : Strategy
     {
         private enum AnchorKind
         {
@@ -41,7 +42,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         private const int CmeRthStart = 83000;
-        private const int PreMarketWindowStart = 30000; // 3:00 AM CST = 4:00 AM ET (US pre-market open)
         private const int CmeRthEnd = 150000;
         private const string RelevantAnchorLabelTag = "ESVwapLite.RelevantAnchor.Label";
         private const string PrevSessionHighLineTag = "ESVwapLite.Level.PrevSessionHigh.Line";
@@ -117,20 +117,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int setupBar;
         private AnchorKind setupAnchorKind;
         private string setupZoneId;
-        private int setupConfirmCount;
 
         // break-even management
         private string activeSignalName;
         private int activeRiskTicks;
         private bool breakEvenMoved;
-        private int activeEntryBar = -1;
-        private double activeStopPrice = double.NaN;
 
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
             {
-                Name = "ESVwapLite";
+                Name = "ESLevelStopRunner";
                 Description = "Minimal-gate ES anchor retest strategy (Session/Weekly VWAP + HOD/LOD + manual anchors).";
 
                 Calculate = Calculate.OnBarClose;
@@ -151,33 +148,26 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AtrPeriod = 14;
                 UseExtendedHours = false;
                 MaxTradesPerDay = 1000;
-                SignalCooldownBars = 5;
+                MaxTradesPerLevelPerSession = 1;
+                FixedStopTicks = 6;
+                FixedTargetTicks = 18;
+                SignalCooldownBars = 0;
                 MinAtrForEntry = 0.8;
                 MaxAtrForEntry = 10.0;
 
                 // risk: recent peak/trough distance, capped/floored
                 StopSwingLookbackBars = 8;
-                MinStopTicks = 8;
-                MaxStopPoints = 10.0;
+                MinStopTicks = 6;
+                MaxStopPoints = 1.5;
                 RiskRewardMultiple = 3.0;
                 MaxRiskPerTradeDollars = 400.0;
-                SwingCloseStopBufferTicks = 1;
-                EnableBreakEven = true;
+                EnableBreakEven = false;
                 BreakEvenTriggerR = 1.5;
                 BreakEvenPlusTicks = 1;
-                EnableTimeStop = true;
-                TimeStopBars = 8;
-                TimeStopMinR = 0.5;
-                EnableSwingCloseTrailing = true;
-                SwingCloseTrailLookbackBars = 5;
-                SwingCloseTrailBufferTicks = 1;
-                SwingCloseTrailStartR = 1.0;
                 EnableRetradeExcursionFilter = true;
                 RetradeExcursionAtrMultiple = 2.0;
                 MaxTradesPerZoneCycle = 2;
-                MaxTradesPerCluster = 2;
                 ConfirmBodyAtrMultiple = 0.2;
-                RequireConfirmCandles = 2;
 
                 // touch/zone behavior
                 TouchToleranceTicks = 2;
@@ -185,17 +175,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SetupMaxBars = 5;
                 ExtremeEstablishAtrMultiple = 2.0;
 
-                EnableSessionVwapAnchor = true;
+                EnableSessionVwapAnchor = false;
                 EnableWeeklyVwapAnchor = false;
                 EnableHodAnchor = false;
                 EnableLodAnchor = false;
                 EnableSessionLevels = true;
-                ShowSessionVwapOnChart = true;
+                ShowSessionVwapOnChart = false;
                 ShowWeeklyVwapOnChart = true;
                 ShowSessionLevelsOnChart = true;
-                ShowRelevantAnchorsOnChart = true;
+                ShowRelevantAnchorsOnChart = false;
                 UseManualAnchors = true;
-                EnableManualAnchorHotkeys = true;
+                EnableManualAnchorHotkeys = false;
                 EnableLogs = true;
 
                 ManualLongAnchorFrom = Core.Globals.MinDate;
@@ -243,8 +233,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             activeSignalName = null;
             activeRiskTicks = 0;
             breakEvenMoved = false;
-            activeEntryBar = -1;
-            activeStopPrice = double.NaN;
 
             if (anchors.Count == 0)
                 return;
@@ -322,7 +310,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             UpdateZoneExcursionState(atrVal);
 
             // confirmation stage: once setup is armed, wait for first directional candle (no anchor-switch cancellation)
-            if (setupActive && setupBar < CurrentBar)
+            if (false && setupActive && setupBar < CurrentBar)
             {
                 double liveAvwap = setupAnchorPrice;
                 for (int i = 0; i < anchors.Count; i++)
@@ -340,28 +328,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                         PrintWithContext("SETUP_CANCELLED timeout kind=" + setupAnchorKind + " side=" + (setupIsLong ? "L" : "S"));
                     setupActive = false;
                     setupZoneId = null;
-                    setupConfirmCount = 0;
                 }
                 else if (setupIsLong)
                 {
                     // keep waiting while close is below anchor; do not cancel until timeout
                     double body = Math.Abs(Close[0] - Open[0]);
                     bool bodyOk = body >= (ConfirmBodyAtrMultiple * atrVal);
-
-                    // count consecutive closes above level; reset if close falls back below
-                    if (Close[0] >= liveAvwap)
-                        setupConfirmCount++;
-                    else
-                        setupConfirmCount = 0;
-
-                    if (EnableLogs)
-                        PrintWithContext("SETUP_CONFIRM_LONG confirmCount=" + setupConfirmCount + "/" + RequireConfirmCandles + " close=" + Close[0].ToString("F2") + " anchor=" + liveAvwap.ToString("F2"));
-
-                    if (setupConfirmCount >= RequireConfirmCandles && Close[0] > Open[0] && bodyOk)
+                    if (Close[0] > Open[0] && Close[0] >= liveAvwap && bodyOk)
                     {
                         TrySubmitEntry(true, liveAvwap, setupAnchorKind, setupZoneId);
                         setupActive = false;
-                        setupConfirmCount = 0;
                         setupZoneId = null;
                         return;
                     }
@@ -371,21 +347,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // keep waiting while close is above anchor; do not cancel until timeout
                     double body = Math.Abs(Close[0] - Open[0]);
                     bool bodyOk = body >= (ConfirmBodyAtrMultiple * atrVal);
-
-                    // count consecutive closes below level; reset if close pops back above
-                    if (Close[0] <= liveAvwap)
-                        setupConfirmCount++;
-                    else
-                        setupConfirmCount = 0;
-
-                    if (EnableLogs)
-                        PrintWithContext("SETUP_CONFIRM_SHORT confirmCount=" + setupConfirmCount + "/" + RequireConfirmCandles + " close=" + Close[0].ToString("F2") + " anchor=" + liveAvwap.ToString("F2"));
-
-                    if (setupConfirmCount >= RequireConfirmCandles && Close[0] < Open[0] && bodyOk)
+                    if (Close[0] < Open[0] && Close[0] <= liveAvwap && bodyOk)
                     {
                         TrySubmitEntry(false, liveAvwap, setupAnchorKind, setupZoneId);
                         setupActive = false;
-                        setupConfirmCount = 0;
                         setupZoneId = null;
                         return;
                     }
@@ -416,26 +381,30 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (inCooldown || tradeCapHit || !atrOk)
                 return;
 
-            // touch arms one latched setup and keeps it fixed until confirm/timeout
+            // touch on the four session levels triggers immediate fade setup
             if (touch && !setupActive)
             {
-                bool candidateLong = inferredLong;
+                bool candidateLong;
+                switch (selected.Kind)
+                {
+                    case AnchorKind.PrevSessionLow:
+                    case AnchorKind.PreMarketLow:
+                        candidateLong = true;
+                        break;
+                    case AnchorKind.PrevSessionHigh:
+                    case AnchorKind.PreMarketHigh:
+                        candidateLong = false;
+                        break;
+                    default:
+                        return;
+                }
 
-                // cluster/zone trade caps
+                // zone trade cap check (independent of excursion filter)
                 if (!string.IsNullOrEmpty(zoneId))
                 {
                     int zCount = zoneTradeCount.ContainsKey(zoneId) ? zoneTradeCount[zoneId] : 0;
-
-                    // hard per-cluster cap (session-level, independent of excursion)
-                    if (zCount >= MaxTradesPerCluster)
-                    {
-                        if (EnableLogs)
-                            PrintWithContext("SETUP_BLOCKED reason=ClusterTradeCap zone=" + zoneId + " count=" + zCount + " anchor=" + avwap.ToString("F2"));
-                        return;
-                    }
-
-                    // cycle cap (can be reset by excursion logic)
                     bool excursionBlocking = EnableRetradeExcursionFilter && zoneNeedsExcursion.ContainsKey(zoneId) && zoneNeedsExcursion[zoneId];
+
                     if (zCount >= MaxTradesPerZoneCycle && excursionBlocking)
                     {
                         if (EnableLogs)
@@ -444,16 +413,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
                 }
 
-                setupIsLong = candidateLong;
-                setupActive = true;
-                setupAnchorPrice = avwap;
-                setupBar = CurrentBar;
-                setupAnchorKind = selected.Kind;
-                setupZoneId = zoneId;
-                setupConfirmCount = 0;
+                TrySubmitEntry(candidateLong, avwap, selected.Kind, zoneId);
 
                 if (EnableLogs)
-                    PrintWithContext("SETUP_ARMED side=" + (setupIsLong ? "LONG" : "SHORT") + " kind=" + selected.Kind + " zone=" + zoneId + " avwap=" + avwap.ToString("F2"));
+                    PrintWithContext("SETUP_TRIGGERED side=" + (candidateLong ? "LONG" : "SHORT") + " kind=" + selected.Kind + " zone=" + zoneId + " avwap=" + avwap.ToString("F2"));
             }
         }
 
@@ -472,12 +435,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                     PrintWithContext("ENTRY_RISKCAP_BYPASS qtyForced=1 stopTicks=" + stopTicks);
             }
 
-            int targetTicks = Math.Max(stopTicks + 1, (int)Math.Round(stopTicks * RiskRewardMultiple));
+            int targetTicks = Math.Max(stopTicks + 1, FixedTargetTicks);
             string side = isLong ? "L" : "S";
-            string usageKey = side + "-" + anchorKind;
+            string usageKey = anchorKind.ToString();
             int nextCount = 1;
             if (anchorUsageCounts.ContainsKey(usageKey))
                 nextCount = anchorUsageCounts[usageKey] + 1;
+            if (nextCount > MaxTradesPerLevelPerSession)
+                return;
             anchorUsageCounts[usageKey] = nextCount;
 
             string signal = usageKey + "-" + nextCount;
@@ -501,8 +466,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             activeSignalName = signal;
             activeRiskTicks = stopTicks;
             breakEvenMoved = false;
-            activeEntryBar = CurrentBar;
-            activeStopPrice = double.NaN;
 
             if (isLong)
                 EnterLong(quantity, signal);
@@ -527,95 +490,35 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void ManageBreakEven()
         {
-            if (activeRiskTicks <= 0 || string.IsNullOrEmpty(activeSignalName))
+            if (!EnableBreakEven || breakEvenMoved || activeRiskTicks <= 0 || string.IsNullOrEmpty(activeSignalName))
                 return;
 
             if (Position.MarketPosition == MarketPosition.Flat)
                 return;
 
             double avg = Position.AveragePrice;
-            double riskPoints = activeRiskTicks * TickSize;
-            double pnlPoints = Position.MarketPosition == MarketPosition.Long ? (Close[0] - avg) : (avg - Close[0]);
-            double pnlR = riskPoints > 0 ? pnlPoints / riskPoints : 0;
+            double triggerMove = BreakEvenTriggerR * activeRiskTicks * TickSize;
 
-            // 1) Time stop: exit if trade fails to progress enough within N bars
-            if (EnableTimeStop && activeEntryBar >= 0)
+            if (Position.MarketPosition == MarketPosition.Long)
             {
-                int barsInTrade = CurrentBar - activeEntryBar;
-                if (barsInTrade >= TimeStopBars && pnlR < TimeStopMinR)
-                {
-                    if (Position.MarketPosition == MarketPosition.Long)
-                        ExitLong("TimeStopExit", activeSignalName);
-                    else if (Position.MarketPosition == MarketPosition.Short)
-                        ExitShort("TimeStopExit", activeSignalName);
-
-                    if (EnableLogs)
-                        PrintWithContext("TIME_STOP_EXIT signal=" + activeSignalName + " bars=" + barsInTrade + " pnlR=" + pnlR.ToString("F2"));
-                    return;
-                }
-            }
-
-            // 2) Break-even move
-            if (EnableBreakEven && !breakEvenMoved)
-            {
-                double triggerMove = BreakEvenTriggerR * riskPoints;
-
-                if (Position.MarketPosition == MarketPosition.Long && Close[0] >= avg + triggerMove)
+                if (Close[0] >= avg + triggerMove)
                 {
                     double bePrice = Instrument.MasterInstrument.RoundToTickSize(avg + (BreakEvenPlusTicks * TickSize));
                     SetStopLoss(activeSignalName, CalculationMode.Price, bePrice, false);
-                    activeStopPrice = double.IsNaN(activeStopPrice) ? bePrice : Math.Max(activeStopPrice, bePrice);
                     breakEvenMoved = true;
                     if (EnableLogs)
                         PrintWithContext("BREAK_EVEN_MOVED side=LONG signal=" + activeSignalName + " stop=" + bePrice.ToString("F2"));
                 }
-                else if (Position.MarketPosition == MarketPosition.Short && Close[0] <= avg - triggerMove)
-                {
-                    double bePrice = Instrument.MasterInstrument.RoundToTickSize(avg - (BreakEvenPlusTicks * TickSize));
-                    SetStopLoss(activeSignalName, CalculationMode.Price, bePrice, false);
-                    activeStopPrice = double.IsNaN(activeStopPrice) ? bePrice : Math.Min(activeStopPrice, bePrice);
-                    breakEvenMoved = true;
-                    if (EnableLogs)
-                        PrintWithContext("BREAK_EVEN_MOVED side=SHORT signal=" + activeSignalName + " stop=" + bePrice.ToString("F2"));
-                }
-            }
-
-            // 3) Swing-close trailing after trade is sufficiently in profit
-            if (!EnableSwingCloseTrailing || pnlR < SwingCloseTrailStartR)
-                return;
-
-            int lb = Math.Min(Math.Max(1, SwingCloseTrailLookbackBars), CurrentBar);
-            int bufTicks = Math.Max(1, SwingCloseTrailBufferTicks);
-            double buffer = bufTicks * TickSize;
-
-            if (Position.MarketPosition == MarketPosition.Long)
-            {
-                double trailBase = Close[0];
-                for (int i = 1; i <= lb; i++)
-                    trailBase = Math.Min(trailBase, Close[i]);
-
-                double newStop = Instrument.MasterInstrument.RoundToTickSize(trailBase - buffer);
-                if (double.IsNaN(activeStopPrice) || newStop > activeStopPrice)
-                {
-                    SetStopLoss(activeSignalName, CalculationMode.Price, newStop, false);
-                    activeStopPrice = newStop;
-                    if (EnableLogs)
-                        PrintWithContext("TRAIL_STOP_MOVED side=LONG signal=" + activeSignalName + " stop=" + newStop.ToString("F2"));
-                }
             }
             else if (Position.MarketPosition == MarketPosition.Short)
             {
-                double trailBase = Close[0];
-                for (int i = 1; i <= lb; i++)
-                    trailBase = Math.Max(trailBase, Close[i]);
-
-                double newStop = Instrument.MasterInstrument.RoundToTickSize(trailBase + buffer);
-                if (double.IsNaN(activeStopPrice) || newStop < activeStopPrice)
+                if (Close[0] <= avg - triggerMove)
                 {
-                    SetStopLoss(activeSignalName, CalculationMode.Price, newStop, false);
-                    activeStopPrice = newStop;
+                    double bePrice = Instrument.MasterInstrument.RoundToTickSize(avg - (BreakEvenPlusTicks * TickSize));
+                    SetStopLoss(activeSignalName, CalculationMode.Price, bePrice, false);
+                    breakEvenMoved = true;
                     if (EnableLogs)
-                        PrintWithContext("TRAIL_STOP_MOVED side=SHORT signal=" + activeSignalName + " stop=" + newStop.ToString("F2"));
+                        PrintWithContext("BREAK_EVEN_MOVED side=SHORT signal=" + activeSignalName + " stop=" + bePrice.ToString("F2"));
                 }
             }
         }
@@ -654,25 +557,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private int ComputeSwingStopTicks(bool isLong)
         {
-            int lookback = Math.Min(Math.Max(1, StopSwingLookbackBars), CurrentBar);
-
-            // Use close-based swing extremes (not wick highs/lows)
-            double swingClose = Close[0];
-            for (int i = 1; i <= lookback; i++)
-                swingClose = isLong ? Math.Min(swingClose, Close[i]) : Math.Max(swingClose, Close[i]);
-
-            int bufferTicks = Math.Max(1, Math.Min(2, SwingCloseStopBufferTicks));
-            double buffer = bufferTicks * TickSize;
-
-            // Short: SL above swing-high close. Long: mirror below swing-low close.
-            double stopLevel = isLong ? swingClose - buffer : swingClose + buffer;
-
-            // Distance from current close to stop level
-            double distPoints = isLong ? (Close[0] - stopLevel) : (stopLevel - Close[0]);
-
-            // Apply MaxStopPoints cap as a safety guard
-            distPoints = Math.Max(TickSize, Math.Min(MaxStopPoints, distPoints));
-            return Math.Max(MinStopTicks, (int)Math.Ceiling(distPoints / TickSize));
+            return Math.Max(1, FixedStopTicks);
         }
 
         private bool ApplyRiskCap(ref int quantity, int stopTicks)
@@ -782,10 +667,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            var prevHighBrush = new SolidColorBrush(Color.FromArgb(255, 74, 144, 226));    // vivid blue
-            var prevLowBrush = new SolidColorBrush(Color.FromArgb(255, 39, 201, 163));    // vivid teal
-            var preHighBrush = new SolidColorBrush(Color.FromArgb(255, 230, 160, 30));    // vivid amber
-            var preLowBrush = new SolidColorBrush(Color.FromArgb(255, 175, 112, 232));    // vivid violet
+            var prevHighBrush = new SolidColorBrush(Color.FromArgb(110, 78, 121, 167));   // muted steel blue
+            var prevLowBrush = new SolidColorBrush(Color.FromArgb(110, 72, 160, 140));    // muted teal
+            var preHighBrush = new SolidColorBrush(Color.FromArgb(110, 181, 142, 76));    // muted amber
+            var preLowBrush = new SolidColorBrush(Color.FromArgb(110, 147, 109, 184));    // muted violet
 
             if (hasPrevSessionLevels)
             {
@@ -922,11 +807,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             dayLowBarIndex = CurrentBar;
             dayLowTime = Time[0];
 
-            // pre-market window is 3:00 AM–8:29:59 AM CST (US pre-market / SPY-style)
-            // don't initialize from the 5 PM session start bar — wait for the window
-            preMarketHigh = double.NaN;
-            preMarketLow = double.NaN;
-            hasPreMarketLevels = false;
+            // pre-market levels start from session start and freeze at 08:29:59 CST
+            preMarketHigh = High[0];
+            preMarketLow = Low[0];
+            hasPreMarketLevels = true;
             dailyTrades = 0;
             anchorCooldowns.Clear();
             anchorUsageCounts.Clear();
@@ -966,22 +850,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 dayLowTime = Time[0];
             }
 
-            // Pre-market window: 3:00 AM CST (4:00 AM ET) → 8:29:59 AM CST (US pre-market / SPY-style)
+            // pre-market window: from session start to 08:29:59 CST
             int cmeTime = GetCmeTimeInt(Time[0]);
-            if (cmeTime >= PreMarketWindowStart && cmeTime < CmeRthStart)
+            if (hasPreMarketLevels && cmeTime <= 82959)
             {
-                if (!hasPreMarketLevels)
-                {
-                    // first bar entering the window — initialize
-                    preMarketHigh = High[0];
-                    preMarketLow = Low[0];
-                    hasPreMarketLevels = true;
-                }
-                else
-                {
-                    preMarketHigh = Math.Max(preMarketHigh, High[0]);
-                    preMarketLow = Math.Min(preMarketLow, Low[0]);
-                }
+                preMarketHigh = Math.Max(preMarketHigh, High[0]);
+                preMarketLow = Math.Min(preMarketLow, Low[0]);
             }
         }
 
@@ -1380,211 +1254,214 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         [NinjaScriptProperty]
         [Range(5, 50)]
-        [Display(Name = "ATR Period", GroupName = "Indicators", Order = 1)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int AtrPeriod { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.1, 10.0)]
-        [Display(Name = "Min ATR For Entry", GroupName = "Regime", Order = 2)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double MinAtrForEntry { get; set; }
 
         [NinjaScriptProperty]
         [Range(1.0, 40.0)]
-        [Display(Name = "Max ATR For Entry", GroupName = "Regime", Order = 3)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double MaxAtrForEntry { get; set; }
 
-        [NinjaScriptProperty]
-        [Display(Name = "Use Extended Hours", GroupName = "Session", Order = 4)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool UseExtendedHours { get; set; }
 
-        [NinjaScriptProperty]
-        [Range(1, 1000)]
-        [Display(Name = "Max Trades Per Day", GroupName = "Risk", Order = 5)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int MaxTradesPerDay { get; set; }
 
         [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Max Trades Per Level Per Session", GroupName = "Risk", Order = 5)]
+        public int MaxTradesPerLevelPerSession { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 40)]
+        [Display(Name = "Stop Ticks", GroupName = "Risk", Order = 6)]
+        public int FixedStopTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(2, 200)]
+        [Display(Name = "Target Ticks", GroupName = "Risk", Order = 7)]
+        public int FixedTargetTicks { get; set; }
+
+        [NinjaScriptProperty]
         [Range(0, 20)]
-        [Display(Name = "Signal Cooldown Bars", GroupName = "Entry", Order = 6)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int SignalCooldownBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Stop Swing Lookback Bars", GroupName = "Risk", Order = 7)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int StopSwingLookbackBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 100)]
-        [Display(Name = "Min Stop Ticks", GroupName = "Risk", Order = 8)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int MinStopTicks { get; set; }
 
         [NinjaScriptProperty]
         [Range(1.0, 10.0)]
-        [Display(Name = "Max Stop Points", GroupName = "Risk", Order = 9)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double MaxStopPoints { get; set; }
 
         [NinjaScriptProperty]
-        [Range(1, 2)]
-        [Display(Name = "Swing Close Stop Buffer Ticks", GroupName = "Risk", Order = 10)]
-        public int SwingCloseStopBufferTicks { get; set; }
-
-        [NinjaScriptProperty]
         [Range(1.0, 4.0)]
-        [Display(Name = "Risk Reward Multiple", GroupName = "Risk", Order = 11)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double RiskRewardMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Range(50.0, 5000.0)]
-        [Display(Name = "Max Risk Per Trade ($)", GroupName = "Risk", Order = 12)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double MaxRiskPerTradeDollars { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Break Even", GroupName = "Risk", Order = 13)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableBreakEven { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.5, 3.0)]
-        [Display(Name = "Break Even Trigger (R)", GroupName = "Risk", Order = 14)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double BreakEvenTriggerR { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 10)]
-        [Display(Name = "Break Even Plus Ticks", GroupName = "Risk", Order = 15)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int BreakEvenPlusTicks { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Time Stop", GroupName = "Risk", Order = 16)]
-        public bool EnableTimeStop { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1, 50)]
-        [Display(Name = "Time Stop Bars", GroupName = "Risk", Order = 17)]
-        public int TimeStopBars { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 2.0)]
-        [Display(Name = "Time Stop Min R", GroupName = "Risk", Order = 18)]
-        public double TimeStopMinR { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Enable Swing-Close Trailing", GroupName = "Risk", Order = 19)]
-        public bool EnableSwingCloseTrailing { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1, 20)]
-        [Display(Name = "Swing-Close Trail Lookback Bars", GroupName = "Risk", Order = 20)]
-        public int SwingCloseTrailLookbackBars { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1, 5)]
-        [Display(Name = "Swing-Close Trail Buffer Ticks", GroupName = "Risk", Order = 21)]
-        public int SwingCloseTrailBufferTicks { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.5, 5.0)]
-        [Display(Name = "Swing-Close Trail Start R", GroupName = "Risk", Order = 22)]
-        public double SwingCloseTrailStartR { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Enable Re-trade Excursion Filter", GroupName = "Risk", Order = 23)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableRetradeExcursionFilter { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.5, 3.0)]
-        [Display(Name = "Re-trade Excursion ATR Multiple", GroupName = "Risk", Order = 24)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double RetradeExcursionAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 10)]
-        [Display(Name = "Max Trades Per Zone Cycle", GroupName = "Risk", Order = 25)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int MaxTradesPerZoneCycle { get; set; }
 
         [NinjaScriptProperty]
-        [Range(1, 20)]
-        [Display(Name = "Max Trades Per Cluster (Session)", GroupName = "Risk", Order = 26)]
-        public int MaxTradesPerCluster { get; set; }
-
-        [NinjaScriptProperty]
         [Range(0.05, 1.0)]
-        [Display(Name = "Confirm Body ATR Multiple", GroupName = "Risk", Order = 27)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double ConfirmBodyAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
-        [Range(1, 5)]
-        [Display(Name = "Require Confirm Candles (closes above/below level)", GroupName = "Entry", Order = 7)]
-        public int RequireConfirmCandles { get; set; }
-
-        [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Touch Tolerance Ticks", GroupName = "Anchors", Order = 12)]
+        [NinjaScriptProperty]
+        [Range(0, 8)]
+        [Display(Name = "Touch Tolerance Ticks", GroupName = "Entry", Order = 4)]
         public int TouchToleranceTicks { get; set; }
 
         [NinjaScriptProperty]
         [Range(2, 20)]
-        [Display(Name = "Recent Bar Lookback", GroupName = "Anchors", Order = 13)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int RecentBarLookback { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Setup Max Bars", GroupName = "Anchors", Order = 14)]
+        [Browsable(false)]
+        [XmlIgnore]
         public int SetupMaxBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.5, 5.0)]
-        [Display(Name = "Extreme Establish ATR Multiple", GroupName = "Anchors", Order = 15)]
+        [Browsable(false)]
+        [XmlIgnore]
         public double ExtremeEstablishAtrMultiple { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Session VWAP Anchor", GroupName = "Anchors", Order = 16)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableSessionVwapAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Weekly VWAP Anchor", GroupName = "Anchors", Order = 17)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableWeeklyVwapAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable HOD Anchor", GroupName = "Anchors", Order = 18)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableHodAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable LOD Anchor", GroupName = "Anchors", Order = 19)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableLodAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Session Levels (Prev Session + Pre-Market)", GroupName = "Anchors", Order = 20)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableSessionLevels { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Use Manual Anchors", GroupName = "Anchors", Order = 21)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool UseManualAnchors { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Session VWAP On Chart", GroupName = "Anchors", Order = 22)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool ShowSessionVwapOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Weekly VWAP On Chart", GroupName = "Anchors", Order = 23)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool ShowWeeklyVwapOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Session Levels On Chart", GroupName = "Anchors", Order = 24)]
+        [NinjaScriptProperty]
+        [Display(Name = "Show Session Levels On Chart", GroupName = "Display", Order = 5)]
         public bool ShowSessionLevelsOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Relevant Anchors On Chart", GroupName = "Anchors", Order = 25)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool ShowRelevantAnchorsOnChart { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Manual Anchor Hotkeys (Q/A/C)", GroupName = "Anchors", Order = 26)]
+        [Browsable(false)]
+        [XmlIgnore]
         public bool EnableManualAnchorHotkeys { get; set; }
 
         [Browsable(false)]
+        [Browsable(false)]
+        [XmlIgnore]
         public DateTime ManualLongAnchorFrom { get; set; }
 
         [Browsable(false)]
+        [Browsable(false)]
+        [XmlIgnore]
         public DateTime ManualShortAnchorFrom { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 23)]
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Logs", GroupName = "Diagnostics", Order = 99)]
         public bool EnableLogs { get; set; }
 
         #endregion

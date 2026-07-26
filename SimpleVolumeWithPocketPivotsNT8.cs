@@ -17,6 +17,7 @@ namespace NinjaTrader.NinjaScript.Indicators
     public class SimpleVolumeWithPocketPivotsNT8 : Indicator
     {
         private Brush ppvBrush;
+        private Brush bearishPpvBrush;
         private Brush upBrush;
         private Brush downBrush;
         private Brush dryBrush;
@@ -60,6 +61,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [XmlIgnore]
         [Display(Name = "Up Volume Color", GroupName = "Colors", Order = 21)]
+        [Display(Name = "Bearish Pocket Pivot Color", GroupName = "Colors", Order = 21)]
+        public Brush BearishPocketPivotBrush { get; set; }
+
+        [Browsable(false)]
+        public string BearishPocketPivotBrushSerializable
+        {
+            get { return Serialize.BrushToString(BearishPocketPivotBrush); }
+            set { BearishPocketPivotBrush = Serialize.StringToBrush(value); }
+        }
+
+        [XmlIgnore]
+        [Display(Name = "Up Volume Color", GroupName = "Colors", Order = 22)]
         public Brush UpVolumeBrush { get; set; }
 
         [Browsable(false)]
@@ -71,6 +84,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [XmlIgnore]
         [Display(Name = "Down Volume Color", GroupName = "Colors", Order = 22)]
+        [Display(Name = "Down Volume Color", GroupName = "Colors", Order = 23)]
         public Brush DownVolumeBrush { get; set; }
 
         [Browsable(false)]
@@ -82,6 +96,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [XmlIgnore]
         [Display(Name = "Dry Volume Color", GroupName = "Colors", Order = 23)]
+        [Display(Name = "Dry Volume Color", GroupName = "Colors", Order = 24)]
         public Brush DryVolumeBrush { get; set; }
 
         [Browsable(false)]
@@ -93,6 +108,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [XmlIgnore]
         [Display(Name = "Noise Color", GroupName = "Colors", Order = 24)]
+        [Display(Name = "Noise Color", GroupName = "Colors", Order = 25)]
         public Brush NoiseBrush { get; set; }
 
         [Browsable(false)]
@@ -106,7 +122,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description = "Simple volume histogram with pocket pivots, high-volume up/down bars, dry-volume bars, and optional price-bar painting, modeled after the TradingView Simple Volume with Pocket Pivots indicator.";
+                Description = "Simple volume histogram with bullish and bearish pocket pivots, high-volume up/down bars, dry-volume bars, and optional price-bar painting, modeled after the TradingView Simple Volume with Pocket Pivots indicator.";
                 Name = "SimpleVolumeWithPocketPivotsNT8";
                 Calculate = Calculate.OnBarClose;
                 IsOverlay = false;
@@ -125,6 +141,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 PaintPriceBars = false;
 
                 PocketPivotBrush = MakeBrush(33, 150, 243);
+                BearishPocketPivotBrush = MakeBrush(171, 71, 188);
                 UpVolumeBrush = MakeBrush(34, 171, 148);
                 DownVolumeBrush = MakeBrush(242, 54, 69);
                 DryVolumeBrush = MakeBrush(255, 152, 0);
@@ -136,6 +153,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (State == State.DataLoaded)
             {
                 ppvBrush = FreezeClone(PocketPivotBrush);
+                bearishPpvBrush = FreezeClone(BearishPocketPivotBrush);
                 upBrush = FreezeClone(UpVolumeBrush);
                 downBrush = FreezeClone(DownVolumeBrush);
                 dryBrush = FreezeClone(DryVolumeBrush);
@@ -155,6 +173,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool isUpBar = IsUpBar(0);
             bool isDownBar = IsDownBar(0);
             bool isPocketPivot = IsPocketPivot(isUpBar);
+            bool isBearishPocketPivot = IsBearishPocketPivot(isDownBar);
             bool isDryVolume = !double.IsNaN(avgVolume) && avgVolume > 0.0 && currentVolume <= avgVolume * DryVolumeFraction;
             bool isHighUpVolume = isUpBar && !double.IsNaN(avgVolume) && currentVolume > avgVolume;
             bool isHighDownVolume = isDownBar && !double.IsNaN(avgVolume) && currentVolume > avgVolume;
@@ -164,6 +183,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 volumeBrush = dryBrush;
             else if (isPocketPivot)
                 volumeBrush = ppvBrush;
+            else if (isBearishPocketPivot)
+                volumeBrush = bearishPpvBrush;
             else if (isHighDownVolume)
                 volumeBrush = downBrush;
             else if (isHighUpVolume)
@@ -194,6 +215,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             double maxDownVolume = MaxDownVolume(PocketPivotLookback);
             return !double.IsNaN(maxDownVolume) && Volume[0] > maxDownVolume;
+        }
+
+        private bool IsBearishPocketPivot(bool isDownBar)
+        {
+            if (!isDownBar)
+                return false;
+
+            double maxUpVolume = MaxUpVolume(PocketPivotLookback);
+            return !double.IsNaN(maxUpVolume) && Volume[0] > maxUpVolume;
         }
 
         private bool IsUpBar(int barsAgo)
@@ -254,6 +284,23 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             return maxDown;
+        }
+
+        private double MaxUpVolume(int lookback)
+        {
+            int count = Math.Min(lookback, CurrentBar);
+            double maxUp = double.NaN;
+
+            for (int i = 1; i <= count; i++)
+            {
+                if (!IsUpBar(i))
+                    continue;
+
+                if (double.IsNaN(maxUp) || Volume[i] > maxUp)
+                    maxUp = Volume[i];
+            }
+
+            return maxUp;
         }
 
         private static Brush FreezeClone(Brush brush)
