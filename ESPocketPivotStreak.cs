@@ -20,13 +20,19 @@
 //            Target= Stop distance × RewardRiskRatio (below fill)
 //
 // NOTE on stop placement
-//   NT8's SetStopLoss(CalculationMode.Ticks) places the stop N ticks from the
-//   ACTUAL FILL price (next bar open), not from Close[0].  The stop tick count
-//   is computed from Close[0] as a proxy, so the physical stop level will be
-//   within 1-3 ticks of Low[0]-1tick on most 5-min bars.  For exact price-level
-//   stops, manage exits manually via OnExecutionUpdate in a future revision.
+//   After an entry fills, OnExecutionUpdate recalculates the stop/target using
+//   the ACTUAL FILL price, ensuring the stop is placed exactly at Low[0]-1 or
+//   High[0]+1 (from the signal bar). The initial SetStopLoss in CheckLongEntry/
+//   CheckShortEntry serves as a safety net if OnExecutionUpdate doesn't fire.
+//
+// NOTE on state persistence
+//   Daily counters (dailyTradeCount, dailyRealizedPnL, dailyLossHit, dailyProfitHit)
+//   reset when the strategy is reloaded or restarted mid-day. This is a general
+//   NT8 limitation (private variables don't persist across instances). For most
+//   traders this is acceptable; if you need full persistence, write to a file.
 //
 // Revision history
+//   v0.2  2026-07-25  Fixed trade counter timing; added exact stop placement
 //   v0.1  2026-07-24  Initial release
 //
 
@@ -55,9 +61,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool     dailyLossHit;      // flag: daily loss limit reached
         private bool     dailyProfitHit;    // flag: daily profit limit reached
 
-        // Used in OnExecutionUpdate for P&L calculation
+        // Used in OnExecutionUpdate for P&L calculation and stop management
         private double   lastEntryPrice;
         private int      lastEntryDirection; // +1 = long, -1 = short
+        private double   plannedStopPrice;   // exact stop price level (Low[0]-1 or High[0]+1)
+        private double   plannedTargetTicks; // target distance in ticks (for R:R)
 
         // ═══════════════════════════════════════════════════════════════════════
         // OnStateChange
@@ -209,22 +217,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return;   // streak broken
             }
 
-            // Stop price: low of the most recent streak bar minus one tick
-            double stopPrice = Low[0] - TickSize;
+            // Store the exact stop price level: low of signal bar minus one tick
+            // This will be used in OnExecutionUpdate to set precise stops from the actual fill
+            plannedStopPrice   = Low[0] - TickSize;
 
-            // Compute stop distance in ticks using Close[0] as fill proxy
-            // (actual fill = open of next bar, typically within a few ticks of Close[0])
-            double stopTicks = Math.Round((Close[0] - stopPrice) / TickSize);
+            // Estimate stop distance using Close[0] as proxy for next bar's open
+            // This provides a safety net, but OnExecutionUpdate will set the exact stop
+            double stopTicks = Math.Round((Close[0] - plannedStopPrice) / TickSize);
             stopTicks        = Math.Max(1.0, stopTicks);   // floor at 1 tick
 
-            double targetTicks = Math.Round(stopTicks * RewardRiskRatio);
-            targetTicks        = Math.Max(1.0, targetTicks);
+            plannedTargetTicks = Math.Round(stopTicks * RewardRiskRatio);
+            plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
+            // Submit entry order with approximate stop/target (safety net)
             EnterLong(ContractQty, "BullStreak");
-            SetStopLoss   ("BullStreak", CalculationMode.Ticks, stopTicks,    false);
-            SetProfitTarget("BullStreak", CalculationMode.Ticks, targetTicks);
+            SetStopLoss   ("BullStreak", CalculationMode.Ticks, stopTicks,           false);
+            SetProfitTarget("BullStreak", CalculationMode.Ticks, plannedTargetTicks);
 
-            dailyTradeCount++;
+            // Note: dailyTradeCount is incremented in OnExecutionUpdate when the order fills
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -239,20 +249,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                     return;   // streak broken
             }
 
-            // Stop price: high of the most recent streak bar plus one tick
-            double stopPrice = High[0] + TickSize;
+            // Store the exact stop price level: high of signal bar plus one tick
+            // This will be used in OnExecutionUpdate to set precise stops from the actual fill
+            plannedStopPrice   = High[0] + TickSize;
 
-            double stopTicks = Math.Round((stopPrice - Close[0]) / TickSize);
+            // Estimate stop distance using Close[0] as proxy for next bar's open
+            double stopTicks = Math.Round((plannedStopPrice - Close[0]) / TickSize);
             stopTicks        = Math.Max(1.0, stopTicks);
 
-            double targetTicks = Math.Round(stopTicks * RewardRiskRatio);
-            targetTicks        = Math.Max(1.0, targetTicks);
+            plannedTargetTicks = Math.Round(stopTicks * RewardRiskRatio);
+            plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
+            // Submit entry order with approximate stop/target (safety net)
             EnterShort(ContractQty, "BearStreak");
-            SetStopLoss   ("BearStreak", CalculationMode.Ticks, stopTicks,    false);
-            SetProfitTarget("BearStreak", CalculationMode.Ticks, targetTicks);
+            SetStopLoss   ("BearStreak", CalculationMode.Ticks, stopTicks,           false);
+            SetProfitTarget("BearStreak", CalculationMode.Ticks, plannedTargetTicks);
 
-            dailyTradeCount++;
+            // Note: dailyTradeCount is incremented in OnExecutionUpdate when the order fills
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -268,7 +281,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // ═══════════════════════════════════════════════════════════════════════
-        // OnExecutionUpdate — tracks realized P&L for daily limits
+        // OnExecutionUpdate — tracks realized P&L for daily limits and sets exact stops
         // ═══════════════════════════════════════════════════════════════════════
         protected override void OnExecutionUpdate(
             Execution execution,
@@ -288,11 +301,43 @@ namespace NinjaTrader.NinjaScript.Strategies
                 case OrderAction.Buy:           // entering long
                     lastEntryPrice     = price;
                     lastEntryDirection = 1;
+                    dailyTradeCount++;          // increment ONLY when the entry actually fills
+
+                    // Set exact stop and target from the actual fill price
+                    // Stop: plannedStopPrice (Low[0] - 1 tick from the signal bar)
+                    // Target: distance from fill to stop × RewardRiskRatio
+                    if (plannedStopPrice > 0)
+                    {
+                        double exactStopTicks = Math.Round((price - plannedStopPrice) / TickSize);
+                        exactStopTicks        = Math.Max(1.0, exactStopTicks);
+
+                        double exactTargetTicks = Math.Round(exactStopTicks * RewardRiskRatio);
+                        exactTargetTicks        = Math.Max(1.0, exactTargetTicks);
+
+                        SetStopLoss   (CalculationMode.Ticks, exactStopTicks,    false);
+                        SetProfitTarget(CalculationMode.Ticks, exactTargetTicks);
+                    }
                     break;
 
                 case OrderAction.SellShort:     // entering short
                     lastEntryPrice     = price;
                     lastEntryDirection = -1;
+                    dailyTradeCount++;          // increment ONLY when the entry actually fills
+
+                    // Set exact stop and target from the actual fill price
+                    // Stop: plannedStopPrice (High[0] + 1 tick from the signal bar)
+                    // Target: distance from stop to fill × RewardRiskRatio
+                    if (plannedStopPrice > 0)
+                    {
+                        double exactStopTicks = Math.Round((plannedStopPrice - price) / TickSize);
+                        exactStopTicks        = Math.Max(1.0, exactStopTicks);
+
+                        double exactTargetTicks = Math.Round(exactStopTicks * RewardRiskRatio);
+                        exactTargetTicks        = Math.Max(1.0, exactTargetTicks);
+
+                        SetStopLoss   (CalculationMode.Ticks, exactStopTicks,    false);
+                        SetProfitTarget(CalculationMode.Ticks, exactTargetTicks);
+                    }
                     break;
 
                 case OrderAction.Sell:          // exiting a long
@@ -318,6 +363,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // Reset entry tracking
                     lastEntryPrice     = 0;
                     lastEntryDirection = 0;
+                    plannedStopPrice   = 0;     // clear for next trade
                     break;
             }
         }
