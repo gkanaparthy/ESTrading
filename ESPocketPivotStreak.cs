@@ -12,18 +12,30 @@
 //   Bear (Purple): close < close[1]  AND  volume > max UP-bar volume in lookback
 //
 // Entry rules
-//   Long  : StreakLength consecutive Bull PP bars → Enter Long at next bar open
-//            Stop  = Low of last streak bar - 1 tick
+//   Long  : (a) StreakLength consecutive Bull PP (blue) bars, OR
+//           (b) alternating pattern blue-green-blue (when enabled)
+//           → Enter Long at next bar open
+//            Stop  = Low of signal bar - 1 tick
 //            Target= Stop distance × RewardRiskRatio (above fill)
-//   Short : StreakLength consecutive Bear PP bars → Enter Short at next bar open
-//            Stop  = High of last streak bar + 1 tick
+//   Short : (a) StreakLength consecutive Bear PP (purple) bars, OR
+//           (b) alternating pattern purple-red-purple (when enabled)
+//           → Enter Short at next bar open
+//            Stop  = High of signal bar + 1 tick
 //            Target= Stop distance × RewardRiskRatio (below fill)
+//
+//   green = up bar, volume > volume SMA, not a Bull PP
+//   red   = down bar, volume > volume SMA, not a Bear PP
+//
+// Stop-halving (optional)
+//   Once price moves in favor by the initial stop distance, the stop is moved
+//   to HALF that distance from entry — one time per trade. E.g. a 20-tick stop
+//   becomes a 10-tick stop after the trade goes +20 ticks in your favor.
 //
 // NOTE on stop placement
 //   After an entry fills, OnExecutionUpdate recalculates the stop/target using
 //   the ACTUAL FILL price, ensuring the stop is placed exactly at Low[0]-1 or
-//   High[0]+1 (from the signal bar). The initial SetStopLoss in CheckLongEntry/
-//   CheckShortEntry serves as a safety net if OnExecutionUpdate doesn't fire.
+//   High[0]+1 (from the signal bar). The initial SetStopLoss in SubmitLongEntry/
+//   SubmitShortEntry serves as a safety net if OnExecutionUpdate doesn't fire.
 //
 // NOTE on state persistence
 //   Daily counters (dailyTradeCount, dailyRealizedPnL, dailyLossHit, dailyProfitHit)
@@ -32,6 +44,8 @@
 //   traders this is acceptable; if you need full persistence, write to a file.
 //
 // Revision history
+//   v0.3  2026-07-26  Added blue-green-blue / purple-red-purple alternating pattern
+//                     entries and optional stop-halving management
 //   v0.2  2026-07-25  Fixed trade counter timing; added exact stop placement
 //   v0.1  2026-07-24  Initial release
 //
@@ -52,8 +66,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         // ═══════════════════════════════════════════════════════════════════════
         // Runtime state
         // ═══════════════════════════════════════════════════════════════════════
-        private Series<bool> isBullPP;      // true when bar[i] is a Bull Pocket Pivot
-        private Series<bool> isBearPP;      // true when bar[i] is a Bear Pocket Pivot
+        private Series<bool> isBullPP;      // true when bar[i] is a Bull Pocket Pivot (blue)
+        private Series<bool> isBearPP;      // true when bar[i] is a Bear Pocket Pivot (purple)
+        private Series<bool> isGreenBar;    // true when bar[i] is a high up-volume bar (green)
+        private Series<bool> isRedBar;      // true when bar[i] is a high down-volume bar (red)
 
         private DateTime lastResetDate;     // tracks the last day counters were cleared
         private int      dailyTradeCount;   // entries taken today
@@ -62,10 +78,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool     dailyProfitHit;    // flag: daily profit limit reached
 
         // Used in OnExecutionUpdate for P&L calculation and stop management
-        private double   lastEntryPrice;
+        private double   lastEntryPrice;    // actual fill price of the current entry
         private int      lastEntryDirection; // +1 = long, -1 = short
         private double   plannedStopPrice;   // exact stop price level (Low[0]-1 or High[0]+1)
         private double   plannedTargetTicks; // target distance in ticks (for R:R)
+
+        // Stop-halving state (Enhancement 2)
+        private double   initialStopTicks;  // exact stop distance in ticks at entry
+        private bool     stopHalved;         // true once the stop has been halved for this trade
 
         // ═══════════════════════════════════════════════════════════════════════
         // OnStateChange
@@ -88,10 +108,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // ── Pocket Pivot ─────────────────────────────────────────────
                 PocketPivotLookback  = 10;
                 StreakLength         = 2;
+                VolumeAverageLength  = 50;      // SMA length for green/red bar classification
+
+                // ── Entry Patterns ───────────────────────────────────────────
+                EnableAlternatingPattern = true; // blue-green-blue / purple-red-purple
 
                 // ── Trade Management ─────────────────────────────────────────
                 RewardRiskRatio      = 2.0;
                 ContractQty          = 1;
+                EnableStopHalving    = true;     // halve stop after favorable move = initial risk
 
                 // ── Session ──────────────────────────────────────────────────
                 EnableRTHOnly        = true;
@@ -107,8 +132,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 // MaximumBarsLookBack.Infinite keeps the full history in memory
                 // so that isBullPP[i] is valid for any i up to CurrentBar.
-                isBullPP = new Series<bool>(this, MaximumBarsLookBack.Infinite);
-                isBearPP = new Series<bool>(this, MaximumBarsLookBack.Infinite);
+                isBullPP   = new Series<bool>(this, MaximumBarsLookBack.Infinite);
+                isBearPP   = new Series<bool>(this, MaximumBarsLookBack.Infinite);
+                isGreenBar = new Series<bool>(this, MaximumBarsLookBack.Infinite);
+                isRedBar   = new Series<bool>(this, MaximumBarsLookBack.Infinite);
             }
         }
 
@@ -118,9 +145,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected override void OnBarUpdate()
         {
             // ── 1. Warmup guard ──────────────────────────────────────────────
-            // Need enough bars so the lookback scan and streak check have valid data.
-            // +3 gives a small safety margin beyond the bare minimum.
-            if (CurrentBar < PocketPivotLookback + StreakLength + 3)
+            // Need enough bars so the lookback scan, volume SMA, and streak/pattern
+            // checks all have valid data. +3 gives a small safety margin.
+            int warmupBars = Math.Max(PocketPivotLookback, VolumeAverageLength) + StreakLength + 3;
+            if (CurrentBar < warmupBars)
                 return;
 
             // ── 2. Daily counter reset ───────────────────────────────────────
@@ -133,12 +161,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 dailyProfitHit     = false;
             }
 
-            // ── 3. Classify this bar as Bull PP / Bear PP ────────────────────
-            //    Must run every bar so isBullPP[i]/isBearPP[i] are populated
-            //    for the streak look-back on future bars.
+            // ── 3. Classify this bar (blue/purple/green/red) ─────────────────
+            //    Must run every bar so the color series are populated for the
+            //    streak/pattern look-back on future bars.
             ClassifyCurrentBar();
 
-            // ── 4. Guards (checked in priority order) ────────────────────────
+            // ── 3b. Manage any open position BEFORE entry guards ──────────────
+            //    Stop-halving must run even when new entries are blocked
+            //    (outside session / daily limits hit).
+            if (EnableStopHalving)
+                ManageStopHalving();
+
+            // ── 4. Entry guards (checked in priority order) ──────────────────
             if (dailyLossHit || dailyProfitHit)
                 return;                                        // daily risk limit hit
 
@@ -152,21 +186,33 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;                                        // already in a position
 
             // ── 5. Entry signals ─────────────────────────────────────────────
-            CheckLongEntry();
-            CheckShortEntry();
+            //    A long fires on either a consecutive Bull-PP streak OR the
+            //    blue-green-blue alternating pattern. Short is the mirror.
+            bool longSignal  = CheckLongStreak()
+                             || (EnableAlternatingPattern && CheckLongPattern());
+            bool shortSignal = CheckShortStreak()
+                             || (EnableAlternatingPattern && CheckShortPattern());
+
+            if (longSignal)
+                SubmitLongEntry();
+            else if (shortSignal)
+                SubmitShortEntry();
         }
 
         // ═══════════════════════════════════════════════════════════════════════
         // ClassifyCurrentBar
-        // Sets isBullPP[0] and isBearPP[0] for the bar that just closed.
+        // Sets isBullPP[0], isBearPP[0], isGreenBar[0], isRedBar[0] for the bar
+        // that just closed. Mirrors the color logic of the TradingView indicator.
         // ═══════════════════════════════════════════════════════════════════════
         private void ClassifyCurrentBar()
         {
             // Need at least one prior bar for close comparison
             if (CurrentBar < 2)
             {
-                isBullPP[0] = false;
-                isBearPP[0] = false;
+                isBullPP[0]   = false;
+                isBearPP[0]   = false;
+                isGreenBar[0] = false;
+                isRedBar[0]   = false;
                 return;
             }
 
@@ -202,34 +248,73 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // Bear PP: down bar that out-volumes the heaviest up bar in the lookback
             isBearPP[0] = isDownBar && !double.IsNaN(maxUpVol)   && Volume[0] > maxUpVol;
+
+            // Green / Red classification (needs the volume moving average).
+            //   Green = up bar with volume above the average that is NOT a Bull PP.
+            //   Red   = down bar with volume above the average that is NOT a Bear PP.
+            // Matches the TradingView color priority (dry > blue > purple > red > green),
+            // where a bar coloured blue/purple is never also treated as green/red.
+            double avgVolume = SMA(Volume, VolumeAverageLength)[0];
+            bool   volAboveAvg = avgVolume > 0 && Volume[0] > avgVolume;
+
+            isGreenBar[0] = isUpBar   && volAboveAvg && !isBullPP[0];
+            isRedBar[0]   = isDownBar && volAboveAvg && !isBearPP[0];
         }
 
         // ═══════════════════════════════════════════════════════════════════════
-        // CheckLongEntry
+        // Signal checkers — return true when the pattern is present ending at bar[0]
+        // bar[0] = most recent closed bar, bar[1] = one before, etc.
         // ═══════════════════════════════════════════════════════════════════════
-        private void CheckLongEntry()
-        {
-            // Verify StreakLength consecutive Bull PP bars ending at bar[0]
-            // bar[0] = most recent closed bar, bar[1] = one before, etc.
-            for (int i = 0; i < StreakLength; i++)
-            {
-                if (!isBullPP[i])
-                    return;   // streak broken
-            }
 
-            // Store the exact stop price level: low of signal bar minus one tick
-            // This will be used in OnExecutionUpdate to set precise stops from the actual fill
-            plannedStopPrice   = Low[0] - TickSize;
+        // Long: StreakLength consecutive Bull PP (blue) bars
+        private bool CheckLongStreak()
+        {
+            for (int i = 0; i < StreakLength; i++)
+                if (!isBullPP[i])
+                    return false;   // streak broken
+            return true;
+        }
+
+        // Short: StreakLength consecutive Bear PP (purple) bars
+        private bool CheckShortStreak()
+        {
+            for (int i = 0; i < StreakLength; i++)
+                if (!isBearPP[i])
+                    return false;   // streak broken
+            return true;
+        }
+
+        // Long alternating pattern: blue-green-blue
+        //   bar[2] = Bull PP, bar[1] = green (high up-volume), bar[0] = Bull PP
+        private bool CheckLongPattern()
+        {
+            return isBullPP[2] && isGreenBar[1] && isBullPP[0];
+        }
+
+        // Short alternating pattern: purple-red-purple
+        //   bar[2] = Bear PP, bar[1] = red (high down-volume), bar[0] = Bear PP
+        private bool CheckShortPattern()
+        {
+            return isBearPP[2] && isRedBar[1] && isBearPP[0];
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // SubmitLongEntry — stop = Low[0] - 1 tick, target = stop distance × R:R
+        // ═══════════════════════════════════════════════════════════════════════
+        private void SubmitLongEntry()
+        {
+            // Store the exact stop price level: low of signal bar minus one tick.
+            // OnExecutionUpdate re-derives exact ticks from the actual fill price.
+            plannedStopPrice = Low[0] - TickSize;
 
             // Estimate stop distance using Close[0] as proxy for next bar's open
-            // This provides a safety net, but OnExecutionUpdate will set the exact stop
+            // (safety net; OnExecutionUpdate sets the exact stop after the fill).
             double stopTicks = Math.Round((Close[0] - plannedStopPrice) / TickSize);
             stopTicks        = Math.Max(1.0, stopTicks);   // floor at 1 tick
 
             plannedTargetTicks = Math.Round(stopTicks * RewardRiskRatio);
             plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
-            // Submit entry order with approximate stop/target (safety net)
             EnterLong(ContractQty, "BullStreak");
             SetStopLoss   ("BullStreak", CalculationMode.Ticks, stopTicks,           false);
             SetProfitTarget("BullStreak", CalculationMode.Ticks, plannedTargetTicks);
@@ -238,34 +323,54 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // ═══════════════════════════════════════════════════════════════════════
-        // CheckShortEntry
+        // SubmitShortEntry — stop = High[0] + 1 tick, target = stop distance × R:R
         // ═══════════════════════════════════════════════════════════════════════
-        private void CheckShortEntry()
+        private void SubmitShortEntry()
         {
-            // Verify StreakLength consecutive Bear PP bars ending at bar[0]
-            for (int i = 0; i < StreakLength; i++)
-            {
-                if (!isBearPP[i])
-                    return;   // streak broken
-            }
+            // Store the exact stop price level: high of signal bar plus one tick.
+            plannedStopPrice = High[0] + TickSize;
 
-            // Store the exact stop price level: high of signal bar plus one tick
-            // This will be used in OnExecutionUpdate to set precise stops from the actual fill
-            plannedStopPrice   = High[0] + TickSize;
-
-            // Estimate stop distance using Close[0] as proxy for next bar's open
             double stopTicks = Math.Round((plannedStopPrice - Close[0]) / TickSize);
             stopTicks        = Math.Max(1.0, stopTicks);
 
             plannedTargetTicks = Math.Round(stopTicks * RewardRiskRatio);
             plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
-            // Submit entry order with approximate stop/target (safety net)
             EnterShort(ContractQty, "BearStreak");
             SetStopLoss   ("BearStreak", CalculationMode.Ticks, stopTicks,           false);
             SetProfitTarget("BearStreak", CalculationMode.Ticks, plannedTargetTicks);
 
             // Note: dailyTradeCount is incremented in OnExecutionUpdate when the order fills
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // ManageStopHalving — once the trade moves in favor by the initial stop
+        // distance, move the stop to half that distance from entry (one-time).
+        // Example: 20-tick initial stop → after +20 ticks favorable, stop = 10 ticks.
+        // ═══════════════════════════════════════════════════════════════════════
+        private void ManageStopHalving()
+        {
+            if (stopHalved) return;                                   // already done for this trade
+            if (initialStopTicks <= 0 || lastEntryPrice <= 0) return; // no active trade yet
+
+            MarketPosition mp = Position.MarketPosition;
+            if (mp == MarketPosition.Flat) return;
+
+            // Favorable excursion measured in ticks from the entry fill.
+            // High[0] for longs / Low[0] for shorts captures the bar's best move.
+            double favorableTicks = (mp == MarketPosition.Long)
+                                  ? (High[0] - lastEntryPrice) / TickSize
+                                  : (lastEntryPrice - Low[0])  / TickSize;
+
+            if (favorableTicks >= initialStopTicks)
+            {
+                double halvedTicks = Math.Max(1.0, Math.Round(initialStopTicks / 2.0));
+
+                // Re-set the stop at halvedTicks from the average entry price.
+                // (Unnamed overload applies to the current position.)
+                SetStopLoss(CalculationMode.Ticks, halvedTicks, false);
+                stopHalved = true;
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -316,6 +421,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                         SetStopLoss   (CalculationMode.Ticks, exactStopTicks,    false);
                         SetProfitTarget(CalculationMode.Ticks, exactTargetTicks);
+
+                        // Store for stop-halving management
+                        initialStopTicks = exactStopTicks;
+                        stopHalved       = false;
                     }
                     break;
 
@@ -337,6 +446,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                         SetStopLoss   (CalculationMode.Ticks, exactStopTicks,    false);
                         SetProfitTarget(CalculationMode.Ticks, exactTargetTicks);
+
+                        // Store for stop-halving management
+                        initialStopTicks = exactStopTicks;
+                        stopHalved       = false;
                     }
                     break;
 
@@ -364,6 +477,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     lastEntryPrice     = 0;
                     lastEntryDirection = 0;
                     plannedStopPrice   = 0;     // clear for next trade
+                    initialStopTicks   = 0;     // clear stop-halving state
+                    stopHalved         = false;
                     break;
             }
         }
@@ -395,7 +510,30 @@ namespace NinjaTrader.NinjaScript.Strategies
             GroupName   = "01 | Pocket Pivot")]
         public int StreakLength { get; set; }
 
-        // ── 02 | Trade Management ────────────────────────────────────────────
+        [NinjaScriptProperty]
+        [Range(2, 500)]
+        [Display(
+            Name        = "Volume Average Length (bars)",
+            Description = "SMA length of volume used to classify green (high up-volume) and "
+                        + "red (high down-volume) bars for the alternating pattern. "
+                        + "Mirrors the 'Volume average length' input in the TradingView script.",
+            Order       = 3,
+            GroupName   = "01 | Pocket Pivot")]
+        public int VolumeAverageLength { get; set; }
+
+        // ── 02 | Entry Patterns ──────────────────────────────────────────────
+
+        [NinjaScriptProperty]
+        [Display(
+            Name        = "Enable Alternating Pattern",
+            Description = "When true, also enters on the 3-bar alternating pattern: "
+                        + "blue-green-blue → long, purple-red-purple → short. "
+                        + "The consecutive streak entry is always active regardless of this setting.",
+            Order       = 1,
+            GroupName   = "02 | Entry Patterns")]
+        public bool EnableAlternatingPattern { get; set; }
+
+        // ── 03 | Trade Management ────────────────────────────────────────────
 
         [NinjaScriptProperty]
         [Range(0.5, 20.0)]
@@ -404,7 +542,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Description = "Profit target as a multiple of the stop-loss distance in ticks. "
                         + "E.g. 2.0 means target = 2 × stop.",
             Order       = 1,
-            GroupName   = "02 | Trade Management")]
+            GroupName   = "03 | Trade Management")]
         public double RewardRiskRatio { get; set; }
 
         [NinjaScriptProperty]
@@ -413,10 +551,20 @@ namespace NinjaTrader.NinjaScript.Strategies
             Name        = "Contracts",
             Description = "Number of contracts per trade.",
             Order       = 2,
-            GroupName   = "02 | Trade Management")]
+            GroupName   = "03 | Trade Management")]
         public int ContractQty { get; set; }
 
-        // ── 03 | Session ─────────────────────────────────────────────────────
+        [NinjaScriptProperty]
+        [Display(
+            Name        = "Enable Stop Halving",
+            Description = "When true, once the trade moves in your favor by the initial stop distance, "
+                        + "the stop is moved to half that distance from entry (one-time per trade). "
+                        + "Example: a 20-tick stop becomes 10 ticks after +20 ticks favorable.",
+            Order       = 3,
+            GroupName   = "03 | Trade Management")]
+        public bool EnableStopHalving { get; set; }
+
+        // ── 04 | Session ─────────────────────────────────────────────────────
 
         [NinjaScriptProperty]
         [Display(
@@ -424,7 +572,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Description = "When true, new entries are blocked outside Regular Trading Hours. "
                         + "Open positions are still managed (stops/targets) at all times.",
             Order       = 1,
-            GroupName   = "03 | Session")]
+            GroupName   = "04 | Session")]
         public bool EnableRTHOnly { get; set; }
 
         [NinjaScriptProperty]
@@ -432,7 +580,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Name        = "RTH Start (HHMMSS)",
             Description = "Earliest time a new entry may be opened. Format: HHMMSS (e.g. 083000 = 08:30:00 CT).",
             Order       = 2,
-            GroupName   = "03 | Session")]
+            GroupName   = "04 | Session")]
         public int RTHStartHHMMSS { get; set; }
 
         [NinjaScriptProperty]
@@ -441,10 +589,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             Description = "Latest time a new entry may be opened. Format: HHMMSS (e.g. 145500 = 14:55:00 CT). "
                         + "Existing positions continue to be managed after this cutoff.",
             Order       = 3,
-            GroupName   = "03 | Session")]
+            GroupName   = "04 | Session")]
         public int RTHEndHHMMSS { get; set; }
 
-        // ── 04 | Risk Controls ───────────────────────────────────────────────
+        // ── 05 | Risk Controls ───────────────────────────────────────────────
 
         [NinjaScriptProperty]
         [Range(1, 50)]
@@ -452,7 +600,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Name        = "Max Trades Per Day",
             Description = "Strategy stops opening new positions once this many entries have been taken today.",
             Order       = 1,
-            GroupName   = "04 | Risk Controls")]
+            GroupName   = "05 | Risk Controls")]
         public int MaxTradesPerDay { get; set; }
 
         [NinjaScriptProperty]
@@ -462,7 +610,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Description = "Halt new entries for the rest of the day once realized losses reach this dollar amount. "
                         + "Set to 0 to disable.",
             Order       = 2,
-            GroupName   = "04 | Risk Controls")]
+            GroupName   = "05 | Risk Controls")]
         public double DailyLossLimit { get; set; }
 
         [NinjaScriptProperty]
@@ -472,7 +620,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             Description = "Halt new entries for the rest of the day once realized profits reach this dollar amount. "
                         + "Set to 0 to disable.",
             Order       = 3,
-            GroupName   = "04 | Risk Controls")]
+            GroupName   = "05 | Risk Controls")]
         public double DailyProfitLimit { get; set; }
 
         #endregion
