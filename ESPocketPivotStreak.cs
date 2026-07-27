@@ -175,10 +175,37 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ManageStopHalving();
 
             // ── 4. Check for signals FIRST (for logging blocked entries) ─────
-            bool longSignal  = CheckLongStreak()
-                             || (EnableAlternatingPattern && CheckLongPattern());
-            bool shortSignal = CheckShortStreak()
-                             || (EnableAlternatingPattern && CheckShortPattern());
+           bool longSignal  = CheckLongStreak()
+                 || (EnableAlternatingPattern && CheckLongPattern());
+bool shortSignal = CheckShortStreak()
+                 || (EnableAlternatingPattern && CheckShortPattern());
+
+// ── 5. Exit an open position when the opposing signal fires ─────
+// Exit management must run before the entry guards so an opposing
+// signal can close a position even outside RTH or after a daily limit.
+if (Position.MarketPosition == MarketPosition.Long && shortSignal)
+{
+    ExitLong("OpposingSignalExit", "BullStreak");
+
+    Print(string.Format(
+        "{0:yyyy-MM-dd HH:mm} EXIT LONG | Opposing short signal fired",
+        Time[0]));
+
+    return; // Exit only; do not reverse into a short on the same signal
+}
+
+if (Position.MarketPosition == MarketPosition.Short && longSignal)
+{
+    ExitShort("OpposingSignalExit", "BearStreak");
+
+    Print(string.Format(
+        "{0:yyyy-MM-dd HH:mm} EXIT SHORT | Opposing long signal fired",
+        Time[0]));
+
+    return; // Exit only; do not reverse into a long on the same signal
+}
+
+// ── 6. Entry guards (checked in priority order) ─────────────────
 
             // ── 5. Entry guards (checked in priority order) ──────────────────
             if (dailyLossHit || dailyProfitHit)
