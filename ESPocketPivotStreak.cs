@@ -44,6 +44,8 @@
 //   traders this is acceptable; if you need full persistence, write to a file.
 //
 // Revision history
+//   v0.4  2026-07-26  Fixed SetStopLoss compilation (removed isSimulatedStop param);
+//                     added debug logging for pocket pivot bars and key events
 //   v0.3  2026-07-26  Added blue-green-blue / purple-red-purple alternating pattern
 //                     entries and optional stop-halving management
 //   v0.2  2026-07-25  Fixed trade counter timing; added exact stop placement
@@ -249,6 +251,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Bear PP: down bar that out-volumes the heaviest up bar in the lookback
             isBearPP[0] = isDownBar && !double.IsNaN(maxUpVol)   && Volume[0] > maxUpVol;
 
+            // Log important pocket pivot bars (blue/purple only)
+            if (isBullPP[0])
+                Print(string.Format("{0:yyyy-MM-dd HH:mm} BLUE (Bull PP) | Vol={1:F0} > MaxDown={2:F0}",
+                    Time[0], Volume[0], maxDownVol));
+            else if (isBearPP[0])
+                Print(string.Format("{0:yyyy-MM-dd HH:mm} PURPLE (Bear PP) | Vol={1:F0} > MaxUp={2:F0}",
+                    Time[0], Volume[0], maxUpVol));
+
             // Green / Red classification (needs the volume moving average).
             //   Green = up bar with volume above the average that is NOT a Bull PP.
             //   Red   = down bar with volume above the average that is NOT a Bear PP.
@@ -316,8 +326,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
             EnterLong(ContractQty, "BullStreak");
-            SetStopLoss   ("BullStreak", CalculationMode.Ticks, stopTicks,           false);
+            SetStopLoss   ("BullStreak", CalculationMode.Ticks, stopTicks);
             SetProfitTarget("BullStreak", CalculationMode.Ticks, plannedTargetTicks);
+
+            Print(string.Format("{0:yyyy-MM-dd HH:mm} LONG signal | Stop={1:F2} Target={2:F0}t",
+                Time[0], plannedStopPrice, plannedTargetTicks));
 
             // Note: dailyTradeCount is incremented in OnExecutionUpdate when the order fills
         }
@@ -337,8 +350,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
             EnterShort(ContractQty, "BearStreak");
-            SetStopLoss   ("BearStreak", CalculationMode.Ticks, stopTicks,           false);
+            SetStopLoss   ("BearStreak", CalculationMode.Ticks, stopTicks);
             SetProfitTarget("BearStreak", CalculationMode.Ticks, plannedTargetTicks);
+
+            Print(string.Format("{0:yyyy-MM-dd HH:mm} SHORT signal | Stop={1:F2} Target={2:F0}t",
+                Time[0], plannedStopPrice, plannedTargetTicks));
 
             // Note: dailyTradeCount is incremented in OnExecutionUpdate when the order fills
         }
@@ -368,8 +384,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // Re-set the stop at halvedTicks from the average entry price.
                 // (Unnamed overload applies to the current position.)
-                SetStopLoss(CalculationMode.Ticks, halvedTicks, false);
+                SetStopLoss(CalculationMode.Ticks, halvedTicks);
                 stopHalved = true;
+
+                Print(string.Format("{0:yyyy-MM-dd HH:mm} STOP HALVED | {1:F0}t → {2:F0}t",
+                    Time[0], initialStopTicks, halvedTicks));
             }
         }
 
@@ -419,12 +438,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                         double exactTargetTicks = Math.Round(exactStopTicks * RewardRiskRatio);
                         exactTargetTicks        = Math.Max(1.0, exactTargetTicks);
 
-                        SetStopLoss   (CalculationMode.Ticks, exactStopTicks,    false);
+                        SetStopLoss   (CalculationMode.Ticks, exactStopTicks);
                         SetProfitTarget(CalculationMode.Ticks, exactTargetTicks);
 
                         // Store for stop-halving management
                         initialStopTicks = exactStopTicks;
                         stopHalved       = false;
+
+                        Print(string.Format("{0:yyyy-MM-dd HH:mm} LONG FILL @ {1:F2} | Stop={2:F0}t Target={3:F0}t",
+                            time, price, exactStopTicks, exactTargetTicks));
                     }
                     break;
 
@@ -444,12 +466,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                         double exactTargetTicks = Math.Round(exactStopTicks * RewardRiskRatio);
                         exactTargetTicks        = Math.Max(1.0, exactTargetTicks);
 
-                        SetStopLoss   (CalculationMode.Ticks, exactStopTicks,    false);
+                        SetStopLoss   (CalculationMode.Ticks, exactStopTicks);
                         SetProfitTarget(CalculationMode.Ticks, exactTargetTicks);
 
                         // Store for stop-halving management
                         initialStopTicks = exactStopTicks;
                         stopHalved       = false;
+
+                        Print(string.Format("{0:yyyy-MM-dd HH:mm} SHORT FILL @ {1:F2} | Stop={2:F0}t Target={3:F0}t",
+                            time, price, exactStopTicks, exactTargetTicks));
                     }
                     break;
 
@@ -465,6 +490,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                                         * pointValue;
 
                     dailyRealizedPnL += tradePnL;
+
+                    Print(string.Format("{0:yyyy-MM-dd HH:mm} EXIT @ {1:F2} | P&L=${2:F2} DailyP&L=${3:F2}",
+                        time, price, tradePnL, dailyRealizedPnL));
 
                     // Evaluate daily limits after each closed trade
                     if (DailyLossLimit   > 0 && dailyRealizedPnL <= -Math.Abs(DailyLossLimit))
