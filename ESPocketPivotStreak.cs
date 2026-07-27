@@ -44,8 +44,11 @@
 //   traders this is acceptable; if you need full persistence, write to a file.
 //
 // Revision history
+//   v0.5  2026-07-27  Fixed stop-halving to actually modify stop on chart by using
+//                     signal name in SetStopLoss call; added signal name tracking
 //   v0.4  2026-07-26  Fixed SetStopLoss compilation (removed isSimulatedStop param);
-//                     added debug logging for pocket pivot bars and key events
+//                     added debug logging for pocket pivot bars and key events;
+//                     added blocked-signal logging to debug entry guards
 //   v0.3  2026-07-26  Added blue-green-blue / purple-red-purple alternating pattern
 //                     entries and optional stop-halving management
 //   v0.2  2026-07-25  Fixed trade counter timing; added exact stop placement
@@ -82,6 +85,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Used in OnExecutionUpdate for P&L calculation and stop management
         private double   lastEntryPrice;    // actual fill price of the current entry
         private int      lastEntryDirection; // +1 = long, -1 = short
+        private string   currentSignalName;  // "BullStreak" or "BearStreak" for current position
         private double   plannedStopPrice;   // exact stop price level (Low[0]-1 or High[0]+1)
         private double   plannedTargetTicks; // target distance in ticks (for R:R)
 
@@ -335,6 +339,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Store the exact stop price level: low of signal bar minus one tick.
             // OnExecutionUpdate re-derives exact ticks from the actual fill price.
             plannedStopPrice = Low[0] - TickSize;
+            currentSignalName = "BullStreak";  // track signal name for stop modifications
 
             // Estimate stop distance using Close[0] as proxy for next bar's open
             // (safety net; OnExecutionUpdate sets the exact stop after the fill).
@@ -344,9 +349,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             plannedTargetTicks = Math.Round(stopTicks * RewardRiskRatio);
             plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
-            EnterLong(ContractQty, "BullStreak");
-            SetStopLoss   ("BullStreak", CalculationMode.Ticks, stopTicks);
-            SetProfitTarget("BullStreak", CalculationMode.Ticks, plannedTargetTicks);
+            EnterLong(ContractQty, currentSignalName);
+            SetStopLoss   (currentSignalName, CalculationMode.Ticks, stopTicks);
+            SetProfitTarget(currentSignalName, CalculationMode.Ticks, plannedTargetTicks);
 
             Print(string.Format("{0:yyyy-MM-dd HH:mm} LONG signal | Stop={1:F2} Target={2:F0}t",
                 Time[0], plannedStopPrice, plannedTargetTicks));
@@ -361,6 +366,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             // Store the exact stop price level: high of signal bar plus one tick.
             plannedStopPrice = High[0] + TickSize;
+            currentSignalName = "BearStreak";  // track signal name for stop modifications
 
             double stopTicks = Math.Round((plannedStopPrice - Close[0]) / TickSize);
             stopTicks        = Math.Max(1.0, stopTicks);
@@ -368,9 +374,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             plannedTargetTicks = Math.Round(stopTicks * RewardRiskRatio);
             plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
-            EnterShort(ContractQty, "BearStreak");
-            SetStopLoss   ("BearStreak", CalculationMode.Ticks, stopTicks);
-            SetProfitTarget("BearStreak", CalculationMode.Ticks, plannedTargetTicks);
+            EnterShort(ContractQty, currentSignalName);
+            SetStopLoss   (currentSignalName, CalculationMode.Ticks, stopTicks);
+            SetProfitTarget(currentSignalName, CalculationMode.Ticks, plannedTargetTicks);
 
             Print(string.Format("{0:yyyy-MM-dd HH:mm} SHORT signal | Stop={1:F2} Target={2:F0}t",
                 Time[0], plannedStopPrice, plannedTargetTicks));
@@ -387,6 +393,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (stopHalved) return;                                   // already done for this trade
             if (initialStopTicks <= 0 || lastEntryPrice <= 0) return; // no active trade yet
+            if (string.IsNullOrEmpty(currentSignalName)) return;      // no signal name tracked
 
             MarketPosition mp = Position.MarketPosition;
             if (mp == MarketPosition.Flat) return;
@@ -401,13 +408,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 double halvedTicks = Math.Max(1.0, Math.Round(initialStopTicks / 2.0));
 
-                // Re-set the stop at halvedTicks from the average entry price.
-                // (Unnamed overload applies to the current position.)
-                SetStopLoss(CalculationMode.Ticks, halvedTicks);
+                // Re-set the stop using the SAME signal name as the entry.
+                // This is critical for NinjaTrader to actually modify the stop on the chart.
+                SetStopLoss(currentSignalName, CalculationMode.Ticks, halvedTicks);
                 stopHalved = true;
 
-                Print(string.Format("{0:yyyy-MM-dd HH:mm} STOP HALVED | {1:F0}t → {2:F0}t",
-                    Time[0], initialStopTicks, halvedTicks));
+                Print(string.Format("{0:yyyy-MM-dd HH:mm} STOP HALVED | {1:F0}t → {2:F0}t (signal={3})",
+                    Time[0], initialStopTicks, halvedTicks, currentSignalName));
             }
         }
 
@@ -523,6 +530,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // Reset entry tracking
                     lastEntryPrice     = 0;
                     lastEntryDirection = 0;
+                    currentSignalName  = null;  // clear signal name for next trade
                     plannedStopPrice   = 0;     // clear for next trade
                     initialStopTicks   = 0;     // clear stop-halving state
                     stopHalved         = false;
