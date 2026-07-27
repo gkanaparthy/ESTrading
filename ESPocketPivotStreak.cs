@@ -174,27 +174,46 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (EnableStopHalving)
                 ManageStopHalving();
 
-            // ── 4. Entry guards (checked in priority order) ──────────────────
-            if (dailyLossHit || dailyProfitHit)
-                return;                                        // daily risk limit hit
-
-            if (!IsInAllowedSession())
-                return;                                        // outside RTH window
-
-            if (dailyTradeCount >= MaxTradesPerDay)
-                return;                                        // max trades cap
-
-            if (Position.MarketPosition != MarketPosition.Flat)
-                return;                                        // already in a position
-
-            // ── 5. Entry signals ─────────────────────────────────────────────
-            //    A long fires on either a consecutive Bull-PP streak OR the
-            //    blue-green-blue alternating pattern. Short is the mirror.
+            // ── 4. Check for signals FIRST (for logging blocked entries) ─────
             bool longSignal  = CheckLongStreak()
                              || (EnableAlternatingPattern && CheckLongPattern());
             bool shortSignal = CheckShortStreak()
                              || (EnableAlternatingPattern && CheckShortPattern());
 
+            // ── 5. Entry guards (checked in priority order) ──────────────────
+            if (dailyLossHit || dailyProfitHit)
+            {
+                if (longSignal || shortSignal)
+                    Print(string.Format("{0:yyyy-MM-dd HH:mm} Signal BLOCKED | Daily limit hit (Loss={1} Profit={2})",
+                        Time[0], dailyLossHit, dailyProfitHit));
+                return;
+            }
+
+            if (!IsInAllowedSession())
+            {
+                if (longSignal || shortSignal)
+                    Print(string.Format("{0:yyyy-MM-dd HH:mm} Signal BLOCKED | Outside RTH ({1:HHmm} not in {2:D6}-{3:D6})",
+                        Time[0], Time[0], RTHStartHHMMSS, RTHEndHHMMSS));
+                return;
+            }
+
+            if (dailyTradeCount >= MaxTradesPerDay)
+            {
+                if (longSignal || shortSignal)
+                    Print(string.Format("{0:yyyy-MM-dd HH:mm} Signal BLOCKED | Max trades hit ({1}/{2})",
+                        Time[0], dailyTradeCount, MaxTradesPerDay));
+                return;
+            }
+
+            if (Position.MarketPosition != MarketPosition.Flat)
+            {
+                if (longSignal || shortSignal)
+                    Print(string.Format("{0:yyyy-MM-dd HH:mm} Signal BLOCKED | Already in position ({1})",
+                        Time[0], Position.MarketPosition));
+                return;
+            }
+
+            // ── 6. Execute entry signals ─────────────────────────────────────
             if (longSignal)
                 SubmitLongEntry();
             else if (shortSignal)
@@ -326,7 +345,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
             EnterLong(ContractQty, "BullStreak");
-            SetStopLoss   ("BullStreak", CalculationMode.Ticks, stopTicks);
+            SetStopLoss   ("BullStreak", CalculationMode.Ticks, stopTicks, false);
             SetProfitTarget("BullStreak", CalculationMode.Ticks, plannedTargetTicks);
 
             Print(string.Format("{0:yyyy-MM-dd HH:mm} LONG signal | Stop={1:F2} Target={2:F0}t",
@@ -350,7 +369,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
             EnterShort(ContractQty, "BearStreak");
-            SetStopLoss   ("BearStreak", CalculationMode.Ticks, stopTicks);
+            SetStopLoss   ("BearStreak", CalculationMode.Ticks, stopTicks, false);
             SetProfitTarget("BearStreak", CalculationMode.Ticks, plannedTargetTicks);
 
             Print(string.Format("{0:yyyy-MM-dd HH:mm} SHORT signal | Stop={1:F2} Target={2:F0}t",
