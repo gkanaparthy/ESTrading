@@ -8,7 +8,7 @@
 // into a mechanical entry strategy for the ES (5-minute chart).
 //
 // A "Pocket Pivot" bar is defined as:
-//   Bull (Blue) : close > close[1]  AND  volume > max DOWN-bar volume in lookback
+//   Bull (Blue)  : close > close[1]  AND  volume > max DOWN-bar volume in lookback
 //   Bear (Purple): close < close[1]  AND  volume > max UP-bar volume in lookback
 //
 // Entry rules
@@ -31,6 +31,23 @@
 //   to HALF that distance from entry — one time per trade. E.g. a 20-tick stop
 //   becomes a 10-tick stop after the trade goes +20 ticks in your favor.
 //
+// Post-exit cooldown  (CooldownBars, default 1)
+//   The cooldown is anchored to the BAR INDEX on which the exit filled
+//   (lastExitBar), NOT to a counter incremented in OnBarUpdate. This matters
+//   because a stop/target usually fills INTRABAR: the bar that contains the
+//   exit still closes afterwards and calls OnBarUpdate, which would consume a
+//   counter-based cooldown and allow an entry on the very next bar.
+//     Exit fills somewhere inside bar 81 → lastExitBar = 81
+//     Bar 81 closes  : CurrentBar - lastExitBar = 0 → signal BLOCKED
+//     Bar 82 closes  : CurrentBar - lastExitBar = 1 → signal allowed
+//   Because entries execute at the NEXT bar's open, blocking the signal on
+//   bar 81 is what prevents any trade on bar 82.
+//
+// Max stop filter  (MaxStopLossTicks, default 25)
+//   Entries are skipped when the planned stop distance exceeds the limit.
+//   Re-checked against the actual fill price; a position whose true stop
+//   exceeds the limit is flattened immediately.
+//
 // NOTE on stop placement
 //   After an entry fills, OnExecutionUpdate recalculates the stop/target using
 //   the ACTUAL FILL price, ensuring the stop is placed exactly at Low[0]-1 or
@@ -44,8 +61,17 @@
 //   traders this is acceptable; if you need full persistence, write to a file.
 //
 // Revision history
+//   v0.7  2026-07-29  Fixed post-exit cooldown: replaced barsSinceExit counter with
+//                     lastExitBar bar-index anchor (counter was consumed by the
+//                     exit's own bar when the stop/target filled intrabar);
+//                     added CooldownBars parameter and a flat-transition backstop
+//   v0.6  2026-07-28  Added 1-bar post-exit cooldown (no entry on bar after exit);
+//                     added MaxStopLossTicks filter (default 25) to skip wide stops
+//   v0.5  2026-07-27  Fixed stop-halving to actually modify stop on chart by using
+//                     signal name in SetStopLoss call; added signal name tracking
 //   v0.4  2026-07-26  Fixed SetStopLoss compilation (removed isSimulatedStop param);
-//                     added debug logging for pocket pivot bars and key events
+//                     added debug logging for pocket pivot bars and key events;
+//                     added blocked-signal logging to debug entry guards
 //   v0.3  2026-07-26  Added blue-green-blue / purple-red-purple alternating pattern
 //                     entries and optional stop-halving management
 //   v0.2  2026-07-25  Fixed trade counter timing; added exact stop placement
@@ -80,14 +106,23 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool     dailyProfitHit;    // flag: daily profit limit reached
 
         // Used in OnExecutionUpdate for P&L calculation and stop management
-        private double   lastEntryPrice;    // actual fill price of the current entry
+        private double   lastEntryPrice;     // actual fill price of the current entry
         private int      lastEntryDirection; // +1 = long, -1 = short
+        private string   currentSignalName;  // "BullStreak" or "BearStreak" for current position
         private double   plannedStopPrice;   // exact stop price level (Low[0]-1 or High[0]+1)
         private double   plannedTargetTicks; // target distance in ticks (for R:R)
 
-        // Stop-halving state (Enhancement 2)
+        // Stop-halving state
         private double   initialStopTicks;  // exact stop distance in ticks at entry
-        private bool     stopHalved;         // true once the stop has been halved for this trade
+        private bool     stopHalved;        // true once the stop has been halved for this trade
+
+        // Post-exit cooldown state
+        //   lastExitBar   = CurrentBar at the moment the exit filled. -1 = no exit yet.
+        //   wasInPosition = position state on the previous OnBarUpdate; used as a
+        //                   backstop to catch flat transitions OnExecutionUpdate misses
+        //                   (session-close exits, manual flatten, partial-fill edges).
+        private int      lastExitBar = -1;
+        private bool     wasInPosition;
 
         // ═══════════════════════════════════════════════════════════════════════
         // OnStateChange
@@ -119,6 +154,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RewardRiskRatio      = 2.0;
                 ContractQty          = 1;
                 EnableStopHalving    = true;     // halve stop after favorable move = initial risk
+                MaxStopLossTicks     = 25;       // skip entry if stop distance exceeds this
+                CooldownBars         = 1;        // no entry on the bar right after an exit
 
                 // ── Session ──────────────────────────────────────────────────
                 EnableRTHOnly        = true;
@@ -126,9 +163,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RTHEndHHMMSS         = 145500;   // 14:55:00 CT  (no new entries after this)
 
                 // ── Risk Controls ─────────────────────────────────────────────
-                MaxTradesPerDay      = 3;
-                DailyLossLimit       = 500.0;    // $500; set 0 to disable
-                DailyProfitLimit     = 1000.0;   // $1,000; set 0 to disable
+                MaxTradesPerDay      = 30;
+                DailyLossLimit       = 5000.0;    // $500; set 0 to disable
+                DailyProfitLimit     = 10000.0;   // $1,000; set 0 to disable
             }
             else if (State == State.DataLoaded)
             {
@@ -138,6 +175,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 isBearPP   = new Series<bool>(this, MaximumBarsLookBack.Infinite);
                 isGreenBar = new Series<bool>(this, MaximumBarsLookBack.Infinite);
                 isRedBar   = new Series<bool>(this, MaximumBarsLookBack.Infinite);
+
+                // Reset cooldown/position tracking for this instance
+                lastExitBar   = -1;
+                wasInPosition = false;
             }
         }
 
@@ -163,6 +204,29 @@ namespace NinjaTrader.NinjaScript.Strategies
                 dailyProfitHit     = false;
             }
 
+            // ── 2b. Flat-transition backstop for the cooldown anchor ─────────
+            //    OnExecutionUpdate is the primary anchor (it fires intrabar with
+            //    the correct CurrentBar). This block catches exits that never
+            //    produce a tracked Sell/BuyToCover execution — e.g. exit-on-
+            //    session-close, manual flatten, or a reset mid-position.
+            if (Position.MarketPosition == MarketPosition.Flat)
+            {
+                if (wasInPosition)
+                {
+                    wasInPosition = false;
+                    if (lastExitBar < CurrentBar)
+                    {
+                        lastExitBar = CurrentBar;
+                        Print(string.Format("{0:yyyy-MM-dd HH:mm} Cooldown anchored by flat transition | exitBar={1}",
+                            Time[0], lastExitBar));
+                    }
+                }
+            }
+            else
+            {
+                wasInPosition = true;
+            }
+
             // ── 3. Classify this bar (blue/purple/green/red) ─────────────────
             //    Must run every bar so the color series are populated for the
             //    streak/pattern look-back on future bars.
@@ -175,39 +239,37 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ManageStopHalving();
 
             // ── 4. Check for signals FIRST (for logging blocked entries) ─────
-           bool longSignal  = CheckLongStreak()
-                 || (EnableAlternatingPattern && CheckLongPattern());
-bool shortSignal = CheckShortStreak()
-                 || (EnableAlternatingPattern && CheckShortPattern());
+            bool longSignal  = CheckLongStreak()
+                             || (EnableAlternatingPattern && CheckLongPattern());
+            bool shortSignal = CheckShortStreak()
+                             || (EnableAlternatingPattern && CheckShortPattern());
 
-// ── 5. Exit an open position when the opposing signal fires ─────
-// Exit management must run before the entry guards so an opposing
-// signal can close a position even outside RTH or after a daily limit.
-if (Position.MarketPosition == MarketPosition.Long && shortSignal)
-{
-    ExitLong("OpposingSignalExit", "BullStreak");
+            // ── 5. Exit an open position when the opposing signal fires ─────
+            // Exit management must run before the entry guards so an opposing
+            // signal can close a position even outside RTH or after a daily limit.
+            if (Position.MarketPosition == MarketPosition.Long && shortSignal)
+            {
+                ExitLong("OpposingSignalExit", "BullStreak");
 
-    Print(string.Format(
-        "{0:yyyy-MM-dd HH:mm} EXIT LONG | Opposing short signal fired",
-        Time[0]));
+                Print(string.Format(
+                    "{0:yyyy-MM-dd HH:mm} EXIT LONG | Opposing short signal fired",
+                    Time[0]));
 
-    return; // Exit only; do not reverse into a short on the same signal
-}
+                return; // Exit only; do not reverse into a short on the same signal
+            }
 
-if (Position.MarketPosition == MarketPosition.Short && longSignal)
-{
-    ExitShort("OpposingSignalExit", "BearStreak");
+            if (Position.MarketPosition == MarketPosition.Short && longSignal)
+            {
+                ExitShort("OpposingSignalExit", "BearStreak");
 
-    Print(string.Format(
-        "{0:yyyy-MM-dd HH:mm} EXIT SHORT | Opposing long signal fired",
-        Time[0]));
+                Print(string.Format(
+                    "{0:yyyy-MM-dd HH:mm} EXIT SHORT | Opposing long signal fired",
+                    Time[0]));
 
-    return; // Exit only; do not reverse into a long on the same signal
-}
+                return; // Exit only; do not reverse into a long on the same signal
+            }
 
-// ── 6. Entry guards (checked in priority order) ─────────────────
-
-            // ── 5. Entry guards (checked in priority order) ──────────────────
+            // ── 6. Entry guards (checked in priority order) ──────────────────
             if (dailyLossHit || dailyProfitHit)
             {
                 if (longSignal || shortSignal)
@@ -240,7 +302,20 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
                 return;
             }
 
-            // ── 6. Execute entry signals ─────────────────────────────────────
+            // Post-exit cooldown — anchored to the bar the exit filled on.
+            // Blocking the signal on the exit bar itself is what prevents an
+            // entry on the following bar (entries fill at the next bar's open).
+            if (CooldownBars > 0
+                && lastExitBar >= 0
+                && (CurrentBar - lastExitBar) < CooldownBars)
+            {
+                if (longSignal || shortSignal)
+                    Print(string.Format("{0:yyyy-MM-dd HH:mm} Signal BLOCKED | Post-exit cooldown (exitBar={1} curBar={2} elapsed={3} need>={4})",
+                        Time[0], lastExitBar, CurrentBar, CurrentBar - lastExitBar, CooldownBars));
+                return;
+            }
+
+            // ── 7. Execute entry signals ─────────────────────────────────────
             if (longSignal)
                 SubmitLongEntry();
             else if (shortSignal)
@@ -310,7 +385,7 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
             //   Red   = down bar with volume above the average that is NOT a Bear PP.
             // Matches the TradingView color priority (dry > blue > purple > red > green),
             // where a bar coloured blue/purple is never also treated as green/red.
-            double avgVolume = SMA(Volume, VolumeAverageLength)[0];
+            double avgVolume   = SMA(Volume, VolumeAverageLength)[0];
             bool   volAboveAvg = avgVolume > 0 && Volume[0] > avgVolume;
 
             isGreenBar[0] = isUpBar   && volAboveAvg && !isBullPP[0];
@@ -361,22 +436,33 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
         {
             // Store the exact stop price level: low of signal bar minus one tick.
             // OnExecutionUpdate re-derives exact ticks from the actual fill price.
-            plannedStopPrice = Low[0] - TickSize;
+            plannedStopPrice  = Low[0] - TickSize;
+            currentSignalName = "BullStreak";  // track signal name for stop modifications
 
             // Estimate stop distance using Close[0] as proxy for next bar's open
             // (safety net; OnExecutionUpdate sets the exact stop after the fill).
             double stopTicks = Math.Round((Close[0] - plannedStopPrice) / TickSize);
             stopTicks        = Math.Max(1.0, stopTicks);   // floor at 1 tick
 
+            // Skip if stop is wider than the configured maximum
+            if (stopTicks > MaxStopLossTicks)
+            {
+                Print(string.Format("{0:yyyy-MM-dd HH:mm} LONG BLOCKED | Stop={1:F0}t > MaxStopLossTicks={2}",
+                    Time[0], stopTicks, MaxStopLossTicks));
+                plannedStopPrice  = 0;
+                currentSignalName = null;
+                return;
+            }
+
             plannedTargetTicks = Math.Round(stopTicks * RewardRiskRatio);
             plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
-            EnterLong(ContractQty, "BullStreak");
-            SetStopLoss   ("BullStreak", CalculationMode.Ticks, stopTicks, false);
-            SetProfitTarget("BullStreak", CalculationMode.Ticks, plannedTargetTicks);
+            EnterLong(ContractQty, currentSignalName);
+            SetStopLoss    (currentSignalName, CalculationMode.Ticks, stopTicks, false);
+            SetProfitTarget(currentSignalName, CalculationMode.Ticks, plannedTargetTicks);
 
-            Print(string.Format("{0:yyyy-MM-dd HH:mm} LONG signal | Stop={1:F2} Target={2:F0}t",
-                Time[0], plannedStopPrice, plannedTargetTicks));
+            Print(string.Format("{0:yyyy-MM-dd HH:mm} LONG signal | Stop={1:F2} ({2:F0}t) Target={3:F0}t",
+                Time[0], plannedStopPrice, stopTicks, plannedTargetTicks));
 
             // Note: dailyTradeCount is incremented in OnExecutionUpdate when the order fills
         }
@@ -387,20 +473,31 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
         private void SubmitShortEntry()
         {
             // Store the exact stop price level: high of signal bar plus one tick.
-            plannedStopPrice = High[0] + TickSize;
+            plannedStopPrice  = High[0] + TickSize;
+            currentSignalName = "BearStreak";  // track signal name for stop modifications
 
             double stopTicks = Math.Round((plannedStopPrice - Close[0]) / TickSize);
             stopTicks        = Math.Max(1.0, stopTicks);
 
+            // Skip if stop is wider than the configured maximum
+            if (stopTicks > MaxStopLossTicks)
+            {
+                Print(string.Format("{0:yyyy-MM-dd HH:mm} SHORT BLOCKED | Stop={1:F0}t > MaxStopLossTicks={2}",
+                    Time[0], stopTicks, MaxStopLossTicks));
+                plannedStopPrice  = 0;
+                currentSignalName = null;
+                return;
+            }
+
             plannedTargetTicks = Math.Round(stopTicks * RewardRiskRatio);
             plannedTargetTicks = Math.Max(1.0, plannedTargetTicks);
 
-            EnterShort(ContractQty, "BearStreak");
-            SetStopLoss   ("BearStreak", CalculationMode.Ticks, stopTicks, false);
-            SetProfitTarget("BearStreak", CalculationMode.Ticks, plannedTargetTicks);
+            EnterShort(ContractQty, currentSignalName);
+            SetStopLoss    (currentSignalName, CalculationMode.Ticks, stopTicks, false);
+            SetProfitTarget(currentSignalName, CalculationMode.Ticks, plannedTargetTicks);
 
-            Print(string.Format("{0:yyyy-MM-dd HH:mm} SHORT signal | Stop={1:F2} Target={2:F0}t",
-                Time[0], plannedStopPrice, plannedTargetTicks));
+            Print(string.Format("{0:yyyy-MM-dd HH:mm} SHORT signal | Stop={1:F2} ({2:F0}t) Target={3:F0}t",
+                Time[0], plannedStopPrice, stopTicks, plannedTargetTicks));
 
             // Note: dailyTradeCount is incremented in OnExecutionUpdate when the order fills
         }
@@ -414,6 +511,7 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
         {
             if (stopHalved) return;                                   // already done for this trade
             if (initialStopTicks <= 0 || lastEntryPrice <= 0) return; // no active trade yet
+            if (string.IsNullOrEmpty(currentSignalName)) return;      // no signal name tracked
 
             MarketPosition mp = Position.MarketPosition;
             if (mp == MarketPosition.Flat) return;
@@ -428,13 +526,13 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
             {
                 double halvedTicks = Math.Max(1.0, Math.Round(initialStopTicks / 2.0));
 
-                // Re-set the stop at halvedTicks from the average entry price.
-                // (Unnamed overload applies to the current position.)
-                SetStopLoss(CalculationMode.Ticks, halvedTicks);
+                // Re-set the stop using the SAME signal name as the entry.
+                // This is critical for NinjaTrader to actually modify the stop on the chart.
+                SetStopLoss(currentSignalName, CalculationMode.Ticks, halvedTicks, false);
                 stopHalved = true;
 
-                Print(string.Format("{0:yyyy-MM-dd HH:mm} STOP HALVED | {1:F0}t → {2:F0}t",
-                    Time[0], initialStopTicks, halvedTicks));
+                Print(string.Format("{0:yyyy-MM-dd HH:mm} STOP HALVED | {1:F0}t → {2:F0}t (signal={3})",
+                    Time[0], initialStopTicks, halvedTicks, currentSignalName));
             }
         }
 
@@ -451,7 +549,8 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
         }
 
         // ═══════════════════════════════════════════════════════════════════════
-        // OnExecutionUpdate — tracks realized P&L for daily limits and sets exact stops
+        // OnExecutionUpdate — tracks realized P&L for daily limits, sets exact
+        // stops, and anchors the post-exit cooldown to the exit bar index
         // ═══════════════════════════════════════════════════════════════════════
         protected override void OnExecutionUpdate(
             Execution execution,
@@ -472,6 +571,7 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
                     lastEntryPrice     = price;
                     lastEntryDirection = 1;
                     dailyTradeCount++;          // increment ONLY when the entry actually fills
+                    wasInPosition      = true;  // keep flat-transition backstop in sync
 
                     // Set exact stop and target from the actual fill price
                     // Stop: plannedStopPrice (Low[0] - 1 tick from the signal bar)
@@ -481,10 +581,19 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
                         double exactStopTicks = Math.Round((price - plannedStopPrice) / TickSize);
                         exactStopTicks        = Math.Max(1.0, exactStopTicks);
 
+                        // Safety: if fill-based stop exceeds max, flatten immediately
+                        if (exactStopTicks > MaxStopLossTicks)
+                        {
+                            Print(string.Format("{0:yyyy-MM-dd HH:mm} LONG FILL REJECTED | ExactStop={1:F0}t > MaxStopLossTicks={2} — flattening",
+                                time, exactStopTicks, MaxStopLossTicks));
+                            ExitLong("MaxStopExceeded", currentSignalName ?? "BullStreak");
+                            break;
+                        }
+
                         double exactTargetTicks = Math.Round(exactStopTicks * RewardRiskRatio);
                         exactTargetTicks        = Math.Max(1.0, exactTargetTicks);
 
-                        SetStopLoss   (CalculationMode.Ticks, exactStopTicks);
+                        SetStopLoss    (CalculationMode.Ticks, exactStopTicks);
                         SetProfitTarget(CalculationMode.Ticks, exactTargetTicks);
 
                         // Store for stop-halving management
@@ -500,6 +609,7 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
                     lastEntryPrice     = price;
                     lastEntryDirection = -1;
                     dailyTradeCount++;          // increment ONLY when the entry actually fills
+                    wasInPosition      = true;  // keep flat-transition backstop in sync
 
                     // Set exact stop and target from the actual fill price
                     // Stop: plannedStopPrice (High[0] + 1 tick from the signal bar)
@@ -509,10 +619,19 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
                         double exactStopTicks = Math.Round((plannedStopPrice - price) / TickSize);
                         exactStopTicks        = Math.Max(1.0, exactStopTicks);
 
+                        // Safety: if fill-based stop exceeds max, flatten immediately
+                        if (exactStopTicks > MaxStopLossTicks)
+                        {
+                            Print(string.Format("{0:yyyy-MM-dd HH:mm} SHORT FILL REJECTED | ExactStop={1:F0}t > MaxStopLossTicks={2} — flattening",
+                                time, exactStopTicks, MaxStopLossTicks));
+                            ExitShort("MaxStopExceeded", currentSignalName ?? "BearStreak");
+                            break;
+                        }
+
                         double exactTargetTicks = Math.Round(exactStopTicks * RewardRiskRatio);
                         exactTargetTicks        = Math.Max(1.0, exactTargetTicks);
 
-                        SetStopLoss   (CalculationMode.Ticks, exactStopTicks);
+                        SetStopLoss    (CalculationMode.Ticks, exactStopTicks);
                         SetProfitTarget(CalculationMode.Ticks, exactTargetTicks);
 
                         // Store for stop-halving management
@@ -526,19 +645,37 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
 
                 case OrderAction.Sell:          // exiting a long
                 case OrderAction.BuyToCover:    // exiting a short
-                    if (lastEntryPrice == 0) break;
+
+                    // ── Anchor the post-exit cooldown to the CURRENT bar ──────
+                    // This runs the moment the stop/target/exit fills, which is
+                    // typically INTRABAR. Anchoring here (rather than counting in
+                    // OnBarUpdate) is what makes the cooldown actually work: the
+                    // exit's own bar will still close and call OnBarUpdate, and
+                    // that call must be BLOCKED so no entry occurs on the next bar.
+                    if (lastExitBar < CurrentBar)
+                        lastExitBar = CurrentBar;
+
+                    if (Position.MarketPosition == MarketPosition.Flat)
+                        wasInPosition = false;
+
+                    if (lastEntryPrice == 0)
+                    {
+                        Print(string.Format("{0:yyyy-MM-dd HH:mm} EXIT @ {1:F2} | cooldown anchored exitBar={2} (no entry price tracked)",
+                            time, price, lastExitBar));
+                        break;
+                    }
 
                     // P&L = direction × price difference × qty × $ per point
-                    double pointValue  = Instrument.MasterInstrument.PointValue;  // 50 for ES
-                    double tradePnL    = lastEntryDirection
-                                        * (price - lastEntryPrice)
-                                        * quantity
-                                        * pointValue;
+                    double pointValue = Instrument.MasterInstrument.PointValue;  // 50 for ES
+                    double tradePnL   = lastEntryDirection
+                                      * (price - lastEntryPrice)
+                                      * quantity
+                                      * pointValue;
 
                     dailyRealizedPnL += tradePnL;
 
-                    Print(string.Format("{0:yyyy-MM-dd HH:mm} EXIT @ {1:F2} | P&L=${2:F2} DailyP&L=${3:F2}",
-                        time, price, tradePnL, dailyRealizedPnL));
+                    Print(string.Format("{0:yyyy-MM-dd HH:mm} EXIT @ {1:F2} | P&L=${2:F2} DailyP&L=${3:F2} | cooldown exitBar={4}",
+                        time, price, tradePnL, dailyRealizedPnL, lastExitBar));
 
                     // Evaluate daily limits after each closed trade
                     if (DailyLossLimit   > 0 && dailyRealizedPnL <= -Math.Abs(DailyLossLimit))
@@ -550,6 +687,7 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
                     // Reset entry tracking
                     lastEntryPrice     = 0;
                     lastEntryDirection = 0;
+                    currentSignalName  = null;  // clear signal name for next trade
                     plannedStopPrice   = 0;     // clear for next trade
                     initialStopTicks   = 0;     // clear stop-halving state
                     stopHalved         = false;
@@ -637,6 +775,26 @@ if (Position.MarketPosition == MarketPosition.Short && longSignal)
             Order       = 3,
             GroupName   = "03 | Trade Management")]
         public bool EnableStopHalving { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 500)]
+        [Display(
+            Name        = "Max Stop Loss (ticks)",
+            Description = "Do not take a trade if the planned stop-loss distance exceeds this many ticks. "
+                        + "Default 25. Checked at signal time (Close proxy) and again on the actual fill.",
+            Order       = 4,
+            GroupName   = "03 | Trade Management")]
+        public int MaxStopLossTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 100)]
+        [Display(
+            Name        = "Post-Exit Cooldown (bars)",
+            Description = "Bars to wait after a trade closes before a new entry signal is accepted. "
+                        + "1 = no entry on the bar immediately following the exit bar. 0 disables.",
+            Order       = 5,
+            GroupName   = "03 | Trade Management")]
+        public int CooldownBars { get; set; }
 
         // ── 04 | Session ─────────────────────────────────────────────────────
 
