@@ -1,6 +1,6 @@
 //
 // ESAVWAPAnchor.cs
-// NinjaTrader 8 Strategy — AVWAP Anchor v1.1.1
+// NinjaTrader 8 Strategy — AVWAP Anchor v1.2.1
 //
 // Platform:
 //   NinjaTrader 8
@@ -14,14 +14,19 @@
 //   1. Detect qualifying Pocket Pivot combinations.
 //   2. Use the first bar of the combination as the anchor candidate.
 //   3. Qualify the candidate as either Swing or BigBody.
-//   4. Wait for price to move at least ArmDistanceATR from the anchor close.
-//   5. Wait for price to contact the anchored VWAP.
-//   6. Trigger only when the candle closes beyond AVWAP with the correct color.
-//   7. Submit the entry for the next bar.
-//   8. Use a maximum stop of MaxStopPoints.
-//   9. Use 2:1 reward/risk when the stop is below RRThresholdPoints,
+//   4. Swing candidates wait SwingConfirmBars bars and install only if no
+//      bar prints beyond the pivot extreme (right-side confirmation).
+//      BigBody candidates install immediately.
+//   5. Wait for price to move at least ArmDistanceATR from the anchor close.
+//   6. Wait for price to contact the anchored VWAP.
+//   7. Trigger only when the candle closes beyond AVWAP with the correct color.
+//   8. Submit the entry for the next bar.
+//   9. Use a maximum stop of MaxStopPoints.
+//  10. Use 2:1 reward/risk when the stop is below RRThresholdPoints,
 //      otherwise use 1:1.
-//  10. Two consecutive stop-outs disqualify the anchor for the session.
+//  11. Two consecutive stop-outs disqualify the anchor for the session.
+//  12. Once price moves 1R in favor, the stop is cut to half the initial
+//      distance (once per trade, see EnableStopHalving).
 //
 // Display revision:
 //   Only the active anchor is displayed.
@@ -30,6 +35,8 @@
 //
 // Important behavior:
 //   - Candidate anchors may form during ETH.
+//   - Swing candidates install only after right-side confirmation
+//     (see EnableSwingConfirmation). BigBody candidates install at once.
 //   - Actual entries are allowed only during RTH entry hours.
 //   - No new anchors are accepted after NoNewAnchorHHMMSS.
 //   - Wrong-color bars closing beyond AVWAP are ignored.
@@ -100,6 +107,22 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double anchorATR;
 
         private string anchorTag = string.Empty;
+
+        // -----------------------------------------------------------------
+        // Pending swing candidate (right-side confirmation)
+        //
+        // A swing candidate is not installed immediately. It waits
+        // SwingConfirmBars bars; if any bar prints beyond the pivot
+        // extreme during the wait, the candidate is discarded. A newer
+        // swing candidate replaces the pending one.
+        // -----------------------------------------------------------------
+
+        private bool hasPendingSwing;
+        private int pendingSwingBar = -1;
+        private int pendingSwingComboEnd = -1;
+        private bool pendingSwingIsHigh;
+        private double pendingSwingExtreme;
+        private double pendingSwingATR;
 
         // ---------------------------------------------------------------------
         // AVWAP state
@@ -233,6 +256,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 PreComboThrustBars = 3;
                 PreComboThrustATR = 1.0;
 
+                EnableSwingConfirmation = true;
+                SwingConfirmBars = 3;
+
                 // -----------------------------------------------------------------
                 // Arming and contact
                 // -----------------------------------------------------------------
@@ -254,7 +280,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 ContractQty = 1;
 
-                EnableStopHalving = false;
+                EnableStopHalving = true;
                 CooldownBars = 1;
 
                 // -----------------------------------------------------------------
@@ -392,6 +418,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 dailyLossHit = false;
                 dailyProfitHit = false;
+
+                ClearPendingSwing();
             }
 
             // -----------------------------------------------------------------
@@ -469,6 +497,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                             anchorSeq));
 
                     ResetAnchor(AnchorState.Idle);
+
+                    ClearPendingSwing();
                 }
             }
 
@@ -518,6 +548,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (state != AnchorState.InTrade)
             {
                 TryDetectCandidate();
+                TryConfirmPendingSwing();
             }
 
             // -----------------------------------------------------------------
@@ -788,26 +819,58 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            string qualificationTag = null;
+            bool isBigBody =
+                IsBigBody(
+                    firstOffset,
+                    atrAtCandidate);
 
-            if (IsBigBody(
-                firstOffset,
-                atrAtCandidate))
+            bool isSwingHigh = false;
+            double swingExtreme = 0.0;
+
+            bool isSwing = false;
+
+            if (!isBigBody)
             {
-                qualificationTag = "BigBody";
-            }
-            else if (IsSwing(
-                firstOffset,
-                comboLen,
-                atrAtCandidate))
-            {
-                qualificationTag = "Swing";
+                isSwing = IsSwing(
+                    firstOffset,
+                    comboLen,
+                    atrAtCandidate,
+                    out isSwingHigh,
+                    out swingExtreme);
             }
 
-            if (qualificationTag == null)
+            if (!isBigBody && !isSwing)
             {
                 return;
             }
+
+            // Swing candidates wait for right-side confirmation instead of
+            // installing immediately. BigBody candidates install now.
+            if (isSwing && EnableSwingConfirmation)
+            {
+                PendSwingCandidate(
+                    candidateBar,
+                    isSwingHigh,
+                    swingExtreme,
+                    atrAtCandidate);
+
+                return;
+            }
+
+            InstallAnchor(
+                candidateBar,
+                atrAtCandidate,
+                isBigBody ? "BigBody" : "Swing");
+
+        }
+
+        private void InstallAnchor(
+            int candidateBar,
+            double atrAtCandidate,
+            string qualificationTag)
+        {
+            int firstOffset =
+                CurrentBar - candidateBar;
 
             bool replacing =
                 state != AnchorState.Idle;
@@ -908,7 +971,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool IsSwing(
             int firstOffset,
             int comboLen,
-            double atr)
+            double atr,
+            out bool isSwingHigh,
+            out double extreme)
         {
             double comboHigh = double.MinValue;
             double comboLow = double.MaxValue;
@@ -991,7 +1056,126 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
+            isSwingHigh = swingHigh;
+
+            extreme =
+                swingHigh
+                    ? comboHigh
+                    : comboLow;
+
             return swingHigh || swingLow;
+        }
+
+        private void PendSwingCandidate(
+            int candidateBar,
+            bool isSwingHigh,
+            double extreme,
+            double atrAtCandidate)
+        {
+            hasPendingSwing = true;
+            pendingSwingBar = candidateBar;
+            pendingSwingComboEnd = CurrentBar;
+            pendingSwingIsHigh = isSwingHigh;
+            pendingSwingExtreme = extreme;
+            pendingSwingATR = atrAtCandidate;
+
+            Print(
+                string.Format(
+                    "{0:yyyy-MM-dd HH:mm} SWING PENDING "
+                    + "| bar {1:HH:mm} {2} extreme={3:F2} "
+                    + "confirm in {4} bars",
+                    Time[0],
+                    Time[CurrentBar - candidateBar],
+                    isSwingHigh ? "high" : "low",
+                    extreme,
+                    SwingConfirmBars));
+        }
+
+        private void TryConfirmPendingSwing()
+        {
+            if (!hasPendingSwing)
+            {
+                return;
+            }
+
+            int barsSinceCombo =
+                CurrentBar - pendingSwingComboEnd;
+
+            if (barsSinceCombo < SwingConfirmBars)
+            {
+                return;
+            }
+
+            // Right-side confirmation: no bar since the anchor bar may print
+            // beyond the pivot extreme.
+            bool extremeHolds = true;
+
+            for (int absBar = pendingSwingBar + 1;
+                absBar <= CurrentBar;
+                absBar++)
+            {
+                int barsAgo =
+                    CurrentBar - absBar;
+
+                if (pendingSwingIsHigh)
+                {
+                    if (High[barsAgo] > pendingSwingExtreme)
+                    {
+                        extremeHolds = false;
+                        break;
+                    }
+                }
+                else
+                {
+                    if (Low[barsAgo] < pendingSwingExtreme)
+                    {
+                        extremeHolds = false;
+                        break;
+                    }
+                }
+            }
+
+            int confirmedBar = pendingSwingBar;
+            double confirmedATR = pendingSwingATR;
+
+            if (extremeHolds)
+            {
+                Print(
+                    string.Format(
+                        "{0:yyyy-MM-dd HH:mm} SWING CONFIRMED "
+                        + "| bar {1:HH:mm} extreme held {2} bars",
+                        Time[0],
+                        Time[CurrentBar - confirmedBar],
+                        barsSinceCombo));
+
+                ClearPendingSwing();
+
+                InstallAnchor(
+                    confirmedBar,
+                    confirmedATR,
+                    "Swing");
+            }
+            else
+            {
+                Print(
+                    string.Format(
+                        "{0:yyyy-MM-dd HH:mm} SWING DISCARDED "
+                        + "| bar {1:HH:mm} extreme broken",
+                        Time[0],
+                        Time[CurrentBar - confirmedBar]));
+
+                ClearPendingSwing();
+            }
+        }
+
+        private void ClearPendingSwing()
+        {
+            hasPendingSwing = false;
+            pendingSwingBar = -1;
+            pendingSwingComboEnd = -1;
+            pendingSwingIsHigh = false;
+            pendingSwingExtreme = 0.0;
+            pendingSwingATR = 0.0;
         }
 
         #endregion
@@ -1289,6 +1473,9 @@ bool shortTrigger =
             // This is provisional. OnOrderUpdate returns the anchor to Armed
             // if the entry is rejected or cancelled without a fill.
             state = AnchorState.InTrade;
+
+            // A pending swing candidate must not install over a live trade.
+            ClearPendingSwing();
 
             Print(
                 string.Format(
@@ -2032,6 +2219,36 @@ bool shortTrigger =
             set;
         }
 
+        [NinjaScriptProperty]
+        [Display(
+            Name = "Enable Swing Confirmation",
+            Description =
+                "ON by default. Holds swing candidates for right-side "
+                + "confirmation instead of anchoring immediately.",
+            Order = 10,
+            GroupName = "02 | Anchor Qualification")]
+        public bool EnableSwingConfirmation
+        {
+            get;
+            set;
+        }
+
+        [NinjaScriptProperty]
+        [Range(0, 20)]
+        [Display(
+            Name = "Swing Confirm Bars",
+            Description =
+                "Bars to wait after a swing combo. The anchor installs "
+                + "only if no bar prints beyond the pivot extreme. "
+                + "Zero restores immediate anchoring.",
+            Order = 11,
+            GroupName = "02 | Anchor Qualification")]
+        public int SwingConfirmBars
+        {
+            get;
+            set;
+        }
+
         // ---------------------------------------------------------------------
         // 03 | Arming and Contact
         // ---------------------------------------------------------------------
@@ -2163,7 +2380,7 @@ bool shortTrigger =
         [Display(
             Name = "Enable Stop Halving",
             Description =
-                "Provisional stop-adjustment method.",
+                "Once price moves 1R in favor, cut the stop to half the initial distance (once per trade).",
             Order = 6,
             GroupName = "04 | Trade Management")]
         public bool EnableStopHalving
