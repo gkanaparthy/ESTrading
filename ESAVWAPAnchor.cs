@@ -1,6 +1,6 @@
 //
 // ESAVWAPAnchor.cs
-// NinjaTrader 8 Strategy — AVWAP Anchor v1.2.1
+// NinjaTrader 8 Strategy — AVWAP Anchor v1.2.0
 //
 // Platform:
 //   NinjaTrader 8
@@ -25,8 +25,6 @@
 //  10. Use 2:1 reward/risk when the stop is below RRThresholdPoints,
 //      otherwise use 1:1.
 //  11. Two consecutive stop-outs disqualify the anchor for the session.
-//  12. Once price moves 1R in favor, the stop is cut to half the initial
-//      distance (once per trade, see EnableStopHalving).
 //
 // Display revision:
 //   Only the active anchor is displayed.
@@ -300,7 +298,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 MaxTradesPerDay = 6;
                 DailyLossLimit = 500.0;
-                DailyProfitLimit = 0.0;
+                DailyProfitLimit = 900.0;
 
                 // -----------------------------------------------------------------
                 // Diagnostics
@@ -2380,7 +2378,7 @@ bool shortTrigger =
         [Display(
             Name = "Enable Stop Halving",
             Description =
-                "Once price moves 1R in favor, cut the stop to half the initial distance (once per trade).",
+                "Provisional stop-adjustment method.",
             Order = 6,
             GroupName = "04 | Trade Management")]
         public bool EnableStopHalving
