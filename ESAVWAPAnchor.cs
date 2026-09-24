@@ -1,6 +1,14 @@
 //
 // ESAVWAPAnchor.cs
-// NinjaTrader 8 Strategy — AVWAP Anchor v1.2.0
+// NinjaTrader 8 Strategy — AVWAP Anchor v1.3.0
+//
+// v1.3.0: Continuation lock (based on the GitHub version). A new anchor
+// candidate no longer replaces the active anchor when the move between the
+// two is one uninterrupted impulse: in a fall (candidate close below anchor
+// close) the lock holds unless a decisively green candle (body >
+// ContinuationLockMinBodyPoints) printed between them; in a rise the mirror
+// image applies. Doji and weak-body candles count as continuation, so the
+// anchor stays at the impulse start instead of re-anchoring mid-move.
 //
 // Platform:
 //   NinjaTrader 8
@@ -256,6 +264,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 EnableSwingConfirmation = true;
                 SwingConfirmBars = 3;
+
+                EnableContinuationLock = true;
+                ContinuationLockMinBodyPoints = 1.0;
 
                 // -----------------------------------------------------------------
                 // Arming and contact
@@ -874,6 +885,32 @@ namespace NinjaTrader.NinjaScript.Strategies
                 state != AnchorState.Idle;
 
             // -----------------------------------------------------------------
+            // Continuation lock: keep the anchor at the impulse start instead
+            // of re-anchoring in the middle of an uninterrupted move.
+            // -----------------------------------------------------------------
+
+            if (replacing
+                && EnableContinuationLock
+                && IsContinuationMove(candidateBar))
+            {
+                int lockCandidateOffset =
+                    CurrentBar - candidateBar;
+
+                Print(
+                    string.Format(
+                        "{0:yyyy-MM-dd HH:mm} ANCHOR LOCK | kept #{1} ({2}) "
+                        + "| candidate bar {3:HH:mm} close={4:F2} "
+                        + "is continuation of the impulse",
+                        Time[0],
+                        anchorSeq,
+                        anchorTag,
+                        Time[lockCandidateOffset],
+                        Close[lockCandidateOffset]));
+
+                return;
+            }
+
+            // -----------------------------------------------------------------
             // Clear the previous active display before installing the new one.
             // -----------------------------------------------------------------
 
@@ -946,6 +983,69 @@ namespace NinjaTrader.NinjaScript.Strategies
                     replacing
                         ? " (replaced previous)"
                         : string.Empty));
+        }
+
+        // Returns true when the candidate bar continues one uninterrupted
+        // impulse from the active anchor, in which case the candidate is
+        // discarded and the old anchor is kept. Direction is read from price:
+        // a candidate close below the anchor close is a fall, above it a rise.
+        // A bar between the two breaks the lock only with a decisive opposing
+        // body; doji and weak-body candles count as continuation.
+        private bool IsContinuationMove(
+            int candidateBar)
+        {
+            if (anchorBar < 0 || candidateBar <= anchorBar)
+            {
+                return false;
+            }
+
+            int candidateOffset =
+                CurrentBar - candidateBar;
+
+            double candidateClose =
+                Close[candidateOffset];
+
+            bool isFall =
+                candidateClose < anchorClose;
+
+            bool isRise =
+                candidateClose > anchorClose;
+
+            if (!isFall && !isRise)
+            {
+                return false;
+            }
+
+            for (int absBar = anchorBar + 1;
+                absBar < candidateBar;
+                absBar++)
+            {
+                int barsAgo =
+                    CurrentBar - absBar;
+
+                double body =
+                    Close[barsAgo] - Open[barsAgo];
+
+                bool breaksLock;
+
+                if (isFall)
+                {
+                    breaksLock =
+                        body > ContinuationLockMinBodyPoints;
+                }
+                else
+                {
+                    breaksLock =
+                        -body > ContinuationLockMinBodyPoints;
+                }
+
+                if (breaksLock)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private bool IsBigBody(
@@ -2242,6 +2342,38 @@ bool shortTrigger =
             Order = 11,
             GroupName = "02 | Anchor Qualification")]
         public int SwingConfirmBars
+        {
+            get;
+            set;
+        }
+
+        [NinjaScriptProperty]
+        [Display(
+            Name = "Enable Continuation Lock",
+            Description =
+                "ON by default. A new anchor candidate does not replace the "
+                + "active anchor when the move between them is one "
+                + "uninterrupted impulse, so the anchor stays at the impulse "
+                + "start instead of re-anchoring mid-move.",
+            Order = 12,
+            GroupName = "02 | Anchor Qualification")]
+        public bool EnableContinuationLock
+        {
+            get;
+            set;
+        }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 10.0)]
+        [Display(
+            Name = "Continuation Lock Min Body (pts)",
+            Description =
+                "A candle between the anchor and the candidate breaks the "
+                + "lock only if its opposing body exceeds this many points. "
+                + "Doji and weak-body candles count as continuation.",
+            Order = 13,
+            GroupName = "02 | Anchor Qualification")]
+        public double ContinuationLockMinBodyPoints
         {
             get;
             set;
