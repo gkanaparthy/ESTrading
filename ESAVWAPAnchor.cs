@@ -1633,21 +1633,58 @@ bool shortTrigger =
                         Math.Round(
                             initialStopTicks / 2.0));
 
-                SetStopLoss(
-                    currentSignalName,
-                    CalculationMode.Ticks,
-                    halvedStopTicks,
-                    false);
+                // Guard (v1.3.1): only move the stop if the new level is
+                // still on the valid side of the live market. The trigger
+                // above reads the intrabar extreme (High[0]/Low[0]), so on
+                // a fast V-reversal the extreme can fire the halving after
+                // price has already ripped back through the new stop level.
+                // Submitting that change gets rejected by the engine
+                // ("stop price can't be changed below/above the market").
+                double newStopPrice =
+                    marketPosition == MarketPosition.Long
+                        ? lastEntryPrice - halvedStopTicks * TickSize
+                        : lastEntryPrice + halvedStopTicks * TickSize;
 
-                stopHalved = true;
+                double marketRef =
+                    marketPosition == MarketPosition.Long
+                        ? GetCurrentBid()
+                        : GetCurrentAsk();
 
-                Print(
-                    string.Format(
-                        "{0:yyyy-MM-dd HH:mm} STOP HALVED "
-                        + "| {1:F0}t → {2:F0}t",
-                        Time[0],
-                        initialStopTicks,
-                        halvedStopTicks));
+                bool stopIsValid =
+                    marketPosition == MarketPosition.Long
+                        ? newStopPrice < marketRef - TickSize
+                        : newStopPrice > marketRef + TickSize;
+
+                if (stopIsValid)
+                {
+                    SetStopLoss(
+                        currentSignalName,
+                        CalculationMode.Ticks,
+                        halvedStopTicks,
+                        false);
+
+                    stopHalved = true;
+
+                    Print(
+                        string.Format(
+                            "{0:yyyy-MM-dd HH:mm} STOP HALVED "
+                            + "| {1:F0}t → {2:F0}t",
+                            Time[0],
+                            initialStopTicks,
+                            halvedStopTicks));
+                }
+                else
+                {
+                    // Leave stopHalved false so the next bar retries the
+                    // halving once the level is valid again.
+                    Print(
+                        string.Format(
+                            "{0:yyyy-MM-dd HH:mm} STOP HALVE SKIPPED "
+                            + "| new {1} vs market {2} (level invalid)",
+                            Time[0],
+                            newStopPrice,
+                            marketRef));
+                }
             }
         }
 
@@ -2668,3 +2705,4 @@ bool shortTrigger =
         #endregion
     }
 }
+
