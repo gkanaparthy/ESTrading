@@ -1,6 +1,20 @@
 //
 // ESAVWAPAnchor.cs
-// NinjaTrader 8 Strategy — AVWAP Anchor v1.3.0
+// NinjaTrader 8 Strategy — AVWAP Anchor v1.4.0
+//
+// v1.4.0: News anchor. At announcement times (default 07:30, 08:30, 13:00 CT
+// = 8:30 ET econ releases, 9:30 ET cash open, 14:00 ET FOMC), a single bar
+// with body >= NewsAnchorATRMult x ATR14 and volume > NewsAnchorVolumeMult x
+// the 50-bar average becomes an anchor candidate immediately, with no
+// pocket-pivot combo required. Tagged "News" in the log. The continuation
+// lock still applies, so a news spike that merely extends the active
+// impulse does not re-anchor. Times are bar OPEN times: NinjaTrader stamps
+// intraday bars with their close time, so the check subtracts one bar
+// period (BarOpenTime()).
+//
+// v1.3.1: Stop-halving guard. ManageStopHalving() checks the proposed new
+// stop against the live bid/ask (plus a tick buffer) before submitting;
+// skips the amendment and retries on the next bar when the level is invalid.
 //
 // v1.3.0: Continuation lock (based on the GitHub version). A new anchor
 // candidate no longer replaces the active anchor when the move between the
@@ -267,6 +281,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 EnableContinuationLock = true;
                 ContinuationLockMinBodyPoints = 1.0;
+
+                EnableNewsAnchor = false;
+                NewsAnchorTimes = "07:30,08:30,13:00";
+                NewsAnchorATRMult = 2.0;
+                NewsAnchorVolumeMult = 2.5;
 
                 // -----------------------------------------------------------------
                 // Arming and contact
@@ -795,6 +814,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (comboLen == 0)
             {
+                // News-time anchor: at announcement times a single
+                // expansion bar with unusually high volume becomes a
+                // candidate without a pocket-pivot combo.
+                TryInstallNewsAnchor();
+
                 return;
             }
 
@@ -871,6 +895,162 @@ namespace NinjaTrader.NinjaScript.Strategies
                 atrAtCandidate,
                 isBigBody ? "BigBody" : "Swing");
 
+        }
+
+        // News-time anchor path. At configured announcement times
+        // (default 07:30, 08:30, 13:00 CT), a single bar with a large
+        // directional body and unusually high volume installs as an anchor
+        // immediately, without needing a pocket-pivot combo. The normal
+        // session cutoff and the continuation lock still apply inside
+        // InstallAnchor().
+        private void TryInstallNewsAnchor()
+        {
+            if (!IsNewsAnchorTime())
+            {
+                return;
+            }
+
+            int currentTime = ToTime(Time[0]);
+
+            if (currentTime > NoNewAnchorHHMMSS
+                && currentTime < RTHEndHHMMSS)
+            {
+                return;
+            }
+
+            double atrNow = atr14[0];
+
+            if (atrNow <= 0.0)
+            {
+                return;
+            }
+
+            double body =
+                Math.Abs(Close[0] - Open[0]);
+
+            double range =
+                High[0] - Low[0];
+
+            double averageVolume =
+                volSma[0];
+
+            double needBody =
+                NewsAnchorATRMult * atrNow;
+
+            double rangePct =
+                range > 0.0
+                    ? body / range
+                    : 0.0;
+
+            double needVolume =
+                NewsAnchorVolumeMult * averageVolume;
+
+            bool bigEnough =
+                range > 0.0
+                && body >= needBody
+                && body >= BigBodyRangePct * range;
+
+            bool loudEnough =
+                averageVolume > 0.0
+                && Volume[0] > needVolume;
+
+            if (!bigEnough || !loudEnough)
+            {
+                Print(
+                    string.Format(
+                        "{0:yyyy-MM-dd HH:mm} NEWS SKIP | O={1:F2} H={2:F2} "
+                        + "L={3:F2} C={4:F2} body={5:F2} pts "
+                        + "(need >={6:F2} = {7:F1}x ATR {8:F2}, "
+                        + "range {9:P0}) | vol={10:N0} "
+                        + "(need >{11:F1}x avg {12:N0})",
+                        BarOpenTime(),
+                        Open[0],
+                        High[0],
+                        Low[0],
+                        Close[0],
+                        body,
+                        needBody,
+                        NewsAnchorATRMult,
+                        atrNow,
+                        rangePct,
+                        Volume[0],
+                        NewsAnchorVolumeMult,
+                        averageVolume));
+
+                return;
+            }
+
+            InstallAnchor(
+                CurrentBar,
+                atrNow,
+                "News");
+        }
+
+        // True when the current bar opens at one of the configured news
+        // times. NewsAnchorTimes is a comma-separated list of HH:MM in
+        // Central time, e.g. "07:30,08:30,13:00".
+        //
+        // NinjaTrader timestamps intraday bars with their closing time,
+        // so the opening time is one bar period earlier. "07:30" therefore
+        // selects the 07:30-07:35 bar that captures the first five minutes
+        // after the release.
+        private bool IsNewsAnchorTime()
+        {
+            if (string.IsNullOrWhiteSpace(NewsAnchorTimes))
+            {
+                return false;
+            }
+
+            TimeSpan barTime = BarOpenTime().TimeOfDay;
+
+            string[] tokens = NewsAnchorTimes.Split(',');
+
+            foreach (string token in tokens)
+            {
+                string[] hm = token.Trim().Split(':');
+
+                if (hm.Length != 2)
+                {
+                    continue;
+                }
+
+                int hours;
+                int minutes;
+
+                if (!int.TryParse(hm[0], out hours)
+                    || !int.TryParse(hm[1], out minutes))
+                {
+                    continue;
+                }
+
+                if (barTime.Hours == hours
+                    && barTime.Minutes == minutes)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // NinjaTrader timestamps intraday bars with their closing time.
+        // The opening time of the current bar is one bar period earlier
+        // (for time-based bars).
+        private DateTime BarOpenTime()
+        {
+            DateTime closeTime = Time[0];
+
+            if (BarsPeriod.BarsPeriodType == BarsPeriodType.Minute)
+            {
+                return closeTime.AddMinutes(-BarsPeriod.Value);
+            }
+
+            if (BarsPeriod.BarsPeriodType == BarsPeriodType.Second)
+            {
+                return closeTime.AddSeconds(-BarsPeriod.Value);
+            }
+
+            return closeTime;
         }
 
         private void InstallAnchor(
@@ -1935,6 +2115,44 @@ bool shortTrigger =
                 string exitName =
                     execution.Order.Name;
 
+
+// -------------------------------------------------------------
+// Final excursion update. Calculate is OnBarClose and this row
+// is written on the exit fill (intrabar), so TrackExcursion()
+// never samples the exit bar. Fold the exit fill itself into
+// MAE/MFE before logging. Intrabar excursion past the fill on
+// the exit bar stays invisible in OnBarClose mode.
+// -------------------------------------------------------------
+
+if (lastEntryDirection > 0)
+{
+    tradeMFE =
+        Math.Max(
+            tradeMFE,
+            price - lastEntryPrice);
+
+    tradeMAE =
+        Math.Max(
+            tradeMAE,
+            lastEntryPrice - price);
+}
+else
+{
+    tradeMFE =
+        Math.Max(
+            tradeMFE,
+            lastEntryPrice - price);
+
+    tradeMAE =
+        Math.Max(
+            tradeMAE,
+            price - lastEntryPrice);
+}
+
+// -------------------------------------------------------------
+// Rejected-fill handling
+// -------------------------------------------------------------
+
                 // -------------------------------------------------------------
                 // Rejected-fill handling
                 // -------------------------------------------------------------
@@ -2702,7 +2920,69 @@ bool shortTrigger =
             set;
         }
 
+        // ---------------------------------------------------------------------
+        // 08 | News Anchor
+        // ---------------------------------------------------------------------
+
+        [NinjaScriptProperty]
+        [Display(
+            Name = "Enable News Anchor",
+            Description =
+                "At announcement times, a single 2x ATR expansion bar with "
+                + "unusually high volume becomes an anchor candidate without "
+                + "a pocket-pivot combo.",
+            Order = 1,
+            GroupName = "08 | News Anchor")]
+        public bool EnableNewsAnchor
+        {
+            get;
+            set;
+        }
+
+        [NinjaScriptProperty]
+        [Display(
+            Name = "News Anchor Times",
+            Description =
+                "Comma-separated HH:MM bar open times in Central time, e.g. "
+                + "\"07:30,08:30,13:00\" (8:30 ET econ, 9:30 ET cash open, "
+                + "14:00 ET FOMC).",
+            Order = 2,
+            GroupName = "08 | News Anchor")]
+        public string NewsAnchorTimes
+        {
+            get;
+            set;
+        }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 10.0)]
+        [Display(
+            Name = "News Anchor ATR Multiple",
+            Description =
+                "News bar body must be at least this many ATRs.",
+            Order = 3,
+            GroupName = "08 | News Anchor")]
+        public double NewsAnchorATRMult
+        {
+            get;
+            set;
+        }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 10.0)]
+        [Display(
+            Name = "News Anchor Volume Multiple",
+            Description =
+                "News bar volume must exceed this multiple of the "
+                + "50-bar volume average.",
+            Order = 4,
+            GroupName = "08 | News Anchor")]
+        public double NewsAnchorVolumeMult
+        {
+            get;
+            set;
+        }
+
         #endregion
     }
 }
-
