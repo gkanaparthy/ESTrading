@@ -1,6 +1,16 @@
 //
 // ESAVWAPAnchor.cs
-// NinjaTrader 8 Strategy — AVWAP Anchor v1.4.0
+// NinjaTrader 8 Strategy — AVWAP Anchor v1.4.1
+//
+// v1.4.1: First-bar anchor for pocket-pivot runs. When blue (bullish) or
+// purple (bearish) pocket-pivot bars print back to back, the anchor now
+// lands on the FIRST bar of the run, not the last. Previously each new
+// pocket-pivot bar formed a fresh combo and a pending swing was re-pended
+// at the newest bar, so the anchor marched forward to the end of the run
+// (e.g. 2026-11-06 MES rally: anchor at the last blue bars instead of the
+// first). The run is now one anchor event: TryDetectCandidate walks the
+// candidate back through same-direction pocket pivots, and a pending swing
+// from the same run is not re-pended.
 //
 // v1.4.0: News anchor. At announcement times (default 07:30, 08:30, 13:00 CT
 // = 8:30 ET econ releases, 9:30 ET cash open, 14:00 ET FOMC), a single bar
@@ -786,11 +796,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         private void TryDetectCandidate()
         {
             int comboLen = 0;
+            bool isBullCombo = false;
 
             // Two consecutive bullish Pocket Pivot bars.
             if (isBullPP[0] && isBullPP[1])
             {
                 comboLen = 2;
+                isBullCombo = true;
             }
             // Two consecutive bearish Pocket Pivot bars.
             else if (isBearPP[0] && isBearPP[1])
@@ -803,6 +815,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 && isBullPP[2])
             {
                 comboLen = 3;
+                isBullCombo = true;
             }
             // Bearish PP, red volume bar, bearish PP.
             else if (isBearPP[0]
@@ -825,12 +838,32 @@ namespace NinjaTrader.NinjaScript.Strategies
             // The first combo bar is the oldest bar in the detected combo.
             int firstOffset = comboLen - 1;
 
+            // Anchor at the FIRST bar of a consecutive pocket-pivot run.
+            // Without this, each new blue (or purple) bar forms a fresh
+            // combo, the pending swing is re-pended at the newest bar, and
+            // the anchor lands on the last bar of the run instead of the
+            // first. Walk back through same-direction pocket pivots so the
+            // whole run is one anchor event at its first bar.
+            while (firstOffset + 1 <= CurrentBar
+                && ((isBullCombo && isBullPP[firstOffset + 1])
+                    || (!isBullCombo && isBearPP[firstOffset + 1])))
+            {
+                firstOffset++;
+            }
+
             int candidateBar =
                 CurrentBar - firstOffset;
 
             // Ignore overlapping detections inside the current combo.
             if (state != AnchorState.Idle
                 && candidateBar <= comboEndBar)
+            {
+                return;
+            }
+
+            // A pending swing from this same run already exists. Re-pending
+            // it would only reset its confirmation clock, so leave it alone.
+            if (hasPendingSwing && candidateBar == pendingSwingBar)
             {
                 return;
             }
