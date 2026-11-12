@@ -1,6 +1,22 @@
 //
 // ESCombinedVWAPSim.cs
-// NinjaTrader 8 Strategy — Combined Anchor + Daily + Weekly VWAP (SIM) v1.0.1
+// NinjaTrader 8 Strategy — Combined Anchor + Daily + Weekly VWAP + Gann (SIM) v1.1.1
+//
+// v1.1.1 (Nov 12, 2026): Skipped-trade log + shadow outcomes. Trades blocked
+// by the max-stop gate are now logged to skipped_trades_ESCombinedVWAPSim.csv
+// (same folder as the trade log, same EnableTradeLog switch). Pre-entry blocks
+// are shadow-tracked bar by bar: WIN if the would-be target hits first, LOSS
+// if the would-be stop hits first, AMBIG if both print in one bar, OPEN if
+// neither hits by RTH end. Fill rejections log immediately as FLATTENED.
+// Logging only: entries, exits, stops, targets, and limits are untouched.
+//
+// v1.1.0: Gann peer level (G). A fourth peer alongside A/D/W, built from the
+// Linear GANN 2.0 indicator levels (Adib Noorani, TradingView): the
+// Square-of-Nine diagonal numbers, n = 1..448, odd n -> n^2, even n -> n^2+1
+// (1, 5, 9, 17, 25, ..., 200705; 448 levels, verified against the Pine list).
+// One Gann level is live at a time: the level nearest the current close.
+// It arms, contacts, triggers, and dies exactly like D/W. Enabled from
+// Nov 9, 2026 (EnableGannLevels defaults true).
 //
 // v1.0.1: First-bar anchor for pocket-pivot runs (mirrors ESAVWAPAnchor
 // v1.4.1). When blue (bullish) or purple (bearish) pocket-pivot bars print
@@ -16,19 +32,20 @@
 // fill rejection) is carried over unchanged.
 //
 // What is new:
-// - Three peer levels: Anchor VWAP (A), Daily VWAP (D), Weekly VWAP (W).
-//   No priority between them. Any eligible level can produce a trade.
+// - Four peer levels: Anchor VWAP (A), Daily VWAP (D), Weekly VWAP (W),
+//   Gann (G). No priority between them. Any eligible level can produce
+//   a trade.
 // - Eligible levels whose values are within ConfluenceTolerancePoints of
-//   each other collapse into ONE zone [min,max]. Tags: A, D, W, A+D, A+W,
-//   D+W, A+D+W.
+//   each other collapse into ONE zone [min,max]. Tags: A, D, W, G, A+D,
+//   A+W, A+G, D+W, D+G, W+G, A+D+W, and so on.
 // - Contact = bar touches the zone (or gaps through it). Trigger within
 //   TriggerWindowBars: Long = green close >= zone.max + 1 pt;
 //   Short = red close <= zone.min - 1 pt. Price must clear the whole
 //   cluster before entry.
 // - One position at a time. A stop-out charges every member of the zone
 //   that produced the trade. MaxStopOutsPerAnchor consecutive stop-outs
-//   kill that level (anchor until RTH end, D/W for the session).
-// - D and W arm per level (ArmDistanceATR x ATR14 away from the level) and
+//   kill that level (anchor until RTH end, D/W/G for the session).
+// - D, W and G arm per level (ArmDistanceATR x ATR14 away from the level) and
 //   must re-arm after any trade on them. Weekly VWAP seeds only on a true
 //   Sunday session open; until then it is not traded.
 //
@@ -101,6 +118,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             public bool HasA;
             public bool HasD;
             public bool HasW;
+            public bool HasG;
             public double Min;
             public double Max;
 
@@ -112,9 +130,30 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (HasA) t += "A";
                     if (HasD) t += (t.Length > 0 ? "+" : "") + "D";
                     if (HasW) t += (t.Length > 0 ? "+" : "") + "W";
+                    if (HasG) t += (t.Length > 0 ? "+" : "") + "G";
                     return t;
                 }
             }
+        }
+
+        // A setup blocked by the max-stop gate, tracked forward to see
+        // whether its would-be target or would-be stop would have hit first.
+        private class ShadowTrade
+        {
+            public DateTime SignalTime;
+            public string Direction;   // "Long" / "Short"
+            public string Pillar;      // zone Tag: A, D, W, G, D+W, ...
+            public string AnchorTag;   // Swing / BigBody / News, when A is in the zone
+            public double SignalPx;    // Close[0] at the signal bar (would-be entry proxy)
+            public double StopPx;
+            public double StopPts;
+            public double Atr;
+            public double TgtPts;
+            public double ZoneMin;
+            public double ZoneMax;
+            public double MFE;
+            public double MAE;
+            public int BarsHeld;
         }
         #endregion
 
@@ -166,6 +205,51 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool weeklySeeded;
 
         // ---------------------------------------------------------------------
+        // Gann level (Linear GANN 2.0, Adib Noorani). Static horizontal lines.
+        // One level is live at a time: the Gann number nearest the close.
+        // ---------------------------------------------------------------------
+        private readonly VwapLevel gann = new VwapLevel { Name = "G" };
+
+        // Square-of-Nine diagonal numbers. For n = 1..448: odd n -> n^2,
+        // even n -> n^2 + 1. Reproduces the indicator's 448-level list
+        // exactly (1, 5, 9, 17, 25, ..., 200705).
+        private static readonly double[] GannLevels = BuildGannLevels();
+
+        private static double[] BuildGannLevels()
+        {
+            double[] levels = new double[448];
+            for (int n = 1; n <= 448; n++)
+            {
+                double sq = (double)n * n;
+                levels[n - 1] = (n % 2 == 1) ? sq : sq + 1.0;
+            }
+            return levels;
+        }
+
+        // Nearest Gann number to a price. Exact hits return the level itself.
+        // Ties go to the lower level.
+        private static double NearestGannLevel(double price)
+        {
+            int idx = Array.BinarySearch(GannLevels, price);
+            if (idx >= 0)
+            {
+                return GannLevels[idx];
+            }
+            int above = ~idx;
+            if (above <= 0)
+            {
+                return GannLevels[0];
+            }
+            if (above >= GannLevels.Length)
+            {
+                return GannLevels[GannLevels.Length - 1];
+            }
+            double lower = GannLevels[above - 1];
+            double upper = GannLevels[above];
+            return (price - lower <= upper - price) ? lower : upper;
+        }
+
+        // ---------------------------------------------------------------------
         // Unified zone contact state
         // ---------------------------------------------------------------------
         private Zone activeZone;
@@ -208,6 +292,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Diagnostics
         // ---------------------------------------------------------------------
         private StreamWriter tradeLog;
+        private StreamWriter skippedLog;
+        private List<ShadowTrade> pendingShadows = new List<ShadowTrade>();
         private const double MinimumTriggerDistancePoints = 1.0;
         #endregion
 
@@ -217,7 +303,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (State == State.SetDefaults)
             {
                 Description =
-                    "SIM: Anchored + Daily + Weekly VWAP pullback. Peer levels "
+                    "SIM: Anchored + Daily + Weekly VWAP + Gann pullback. Peer levels "
                     + "merge into a zone when within tolerance.";
                 Name = "ESCombinedVWAPSim";
                 Calculate = Calculate.OnBarClose;
@@ -261,6 +347,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // 03b | Daily / Weekly VWAP
                 EnableDailyVWAP = true;
                 EnableWeeklyVWAP = true;
+                EnableGannLevels = true;
                 ConfluenceTolerancePoints = 2.0;
 
                 // 04 | Trade management
@@ -291,6 +378,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 AddPlot(new Stroke(Brushes.Gold, 2), PlotStyle.Line, "AVWAP");
                 AddPlot(new Stroke(Brushes.DodgerBlue, 1), PlotStyle.Line, "DVWAP");
                 AddPlot(new Stroke(Brushes.OrangeRed, 1), PlotStyle.Line, "WVWAP");
+                AddPlot(new Stroke(Brushes.Purple, 1), PlotStyle.Line, "GANN");
             }
             else if (State == State.DataLoaded)
             {
@@ -341,6 +429,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                         "# RUN START {0:yyyy-MM-dd HH:mm:ss} {1} {2}",
                         DateTime.Now, Instrument.FullName, Name));
                     tradeLog.Flush();
+
+                    string skippedPath = Path.Combine(
+                        NinjaTrader.Core.Globals.UserDataDir,
+                        "skipped_trades_" + Name + ".csv");
+                    bool skippedNewFile = !File.Exists(skippedPath);
+                    skippedLog = new StreamWriter(skippedPath, true);
+                    if (skippedNewFile)
+                    {
+                        skippedLog.WriteLine(
+                            "Time,Dir,Pillar,AnchorTag,SignalPx,StopPx,"
+                            + "StopPts,ATR,StopATR,StopPctATR,TgtPts,SkipStage,"
+                            + "ZoneMin,ZoneMax,Outcome,BarsHeld,MFE,MAE");
+                    }
+                    skippedLog.WriteLine(string.Format(
+                        "# RUN START {0:yyyy-MM-dd HH:mm:ss} {1} {2}",
+                        DateTime.Now, Instrument.FullName, Name));
+                    skippedLog.Flush();
                 }
             }
             else if (State == State.Terminated)
@@ -350,6 +455,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                     tradeLog.Flush();
                     tradeLog.Close();
                     tradeLog = null;
+                }
+                if (skippedLog != null)
+                {
+                    skippedLog.Flush();
+                    skippedLog.Close();
+                    skippedLog = null;
                 }
             }
         }
@@ -361,6 +472,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Daily / Weekly VWAP accumulate from the very first bar so the
             // weekly has full history by the time trading is allowed.
             UpdateDailyWeeklyVwaps();
+            UpdateGannLevels();
 
             int warmup =
                 Math.Max(Math.Max(PocketPivotLookback, VolumeAverageLength), ATRPeriod)
@@ -373,6 +485,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Values[0][0] = double.NaN;
                 return;
             }
+
+            // Shadow-track any setups the max-stop gate blocked, before this
+            // bar's trigger evaluation can add a new one.
+            UpdateShadowTrades();
 
             // -----------------------------------------------------------------
             // Daily reset
@@ -473,10 +589,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             // -----------------------------------------------------------------
-            // Arm Daily / Weekly levels
+            // Arm Daily / Weekly / Gann levels
             // -----------------------------------------------------------------
             ArmLevel(daily);
             ArmLevel(weekly);
+            ArmLevel(gann);
 
             // -----------------------------------------------------------------
             // Manage an open trade
@@ -550,6 +667,27 @@ namespace NinjaTrader.NinjaScript.Strategies
             Values[2][0] = EnableWeeklyVWAP && weekly.IsLive ? weekly.Value : double.NaN;
         }
 
+        // Gann level for this bar: the Gann number nearest the close.
+        // Session state (Armed / StopOuts / Dead) resets each session like D/W.
+        // Disabled leaves the level empty so it can never be eligible.
+        private void UpdateGannLevels()
+        {
+            if (Bars.IsFirstBarOfSession)
+            {
+                gann.ResetSession();
+            }
+
+            if (!EnableGannLevels)
+            {
+                gann.Value = double.NaN;
+                Values[3][0] = double.NaN;
+                return;
+            }
+
+            gann.Value = NearestGannLevel(Close[0]);
+            Values[3][0] = gann.IsLive ? gann.Value : double.NaN;
+        }
+
         private void ArmLevel(VwapLevel level)
         {
             if (level.Armed || level.Dead || !level.IsLive)
@@ -567,7 +705,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 level.Armed = true;
                 Print(string.Format(
-                    "{0:yyyy-MM-dd HH:mm} ARMED {1} | close {2:F2} is {3:F1} ATR from {1}VWAP {4:F2}",
+                    "{0:yyyy-MM-dd HH:mm} ARMED {1} | close {2:F2} is {3:F1} ATR from {1} level {4:F2}",
                     Time[0], level.Name, Close[0],
                     Math.Abs(Close[0] - level.Value) / atrNow, level.Value));
             }
@@ -612,6 +750,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             return EnableWeeklyVWAP && weekly.IsLive && weekly.Armed && !weekly.Dead;
         }
 
+        private bool GannEligible()
+        {
+            return EnableGannLevels && gann.IsLive && gann.Armed && !gann.Dead;
+        }
+
         // Cluster eligible levels into zones. Levels sorted by value; a level
         // joins the current cluster when it is within tolerance of the
         // cluster's top edge.
@@ -625,6 +768,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 levels.Add(new KeyValuePair<char, double>('D', daily.Value));
             if (WeeklyEligible())
                 levels.Add(new KeyValuePair<char, double>('W', weekly.Value));
+            if (GannEligible())
+                levels.Add(new KeyValuePair<char, double>('G', gann.Value));
 
             levels.Sort((x, y) => x.Value.CompareTo(y.Value));
 
@@ -646,7 +791,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 if (lv.Key == 'A') current.HasA = true;
                 else if (lv.Key == 'D') current.HasD = true;
-                else current.HasW = true;
+                else if (lv.Key == 'W') current.HasW = true;
+                else current.HasG = true;
             }
 
             return zones;
@@ -657,6 +803,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (z.HasA && !AnchorEligible()) return false;
             if (z.HasD && !DailyEligible()) return false;
             if (z.HasW && !WeeklyEligible()) return false;
+            if (z.HasG && !GannEligible()) return false;
             return true;
         }
 
@@ -669,6 +816,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (z.HasA) { mn = Math.Min(mn, avwap); mx = Math.Max(mx, avwap); }
             if (z.HasD) { mn = Math.Min(mn, daily.Value); mx = Math.Max(mx, daily.Value); }
             if (z.HasW) { mn = Math.Min(mn, weekly.Value); mx = Math.Max(mx, weekly.Value); }
+            if (z.HasG) { mn = Math.Min(mn, gann.Value); mx = Math.Max(mx, gann.Value); }
 
             z.Min = mn;
             z.Max = mx;
@@ -1389,6 +1537,31 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Print(string.Format(
                     "{0:yyyy-MM-dd HH:mm} {1} {2} BLOCKED | SL {3:F2} pts > max {4:F2}",
                     Time[0], direction, z.Tag, stopProxyPoints, MaxStopPoints));
+                // Log the miss and shadow-track it: would the would-be target
+                // or would-be stop have hit first? Real-time bars only, so a
+                // restart's historical sweep never backfills this file.
+                if (State == State.Realtime)
+                {
+                    double atrNow = atr14[0];
+                    double rr = stopProxyPoints < RRThresholdPoints ? HighRR : LowRR;
+                    pendingShadows.Add(new ShadowTrade
+                    {
+                        SignalTime = Time[0],
+                        Direction = longTrigger ? "Long" : "Short",
+                        Pillar = z.Tag,
+                        AnchorTag = z.HasA ? anchorTag : string.Empty,
+                        SignalPx = Close[0],
+                        StopPx = plannedStopPrice,
+                        StopPts = stopProxyPoints,
+                        Atr = atrNow,
+                        TgtPts = stopProxyPoints * rr,
+                        ZoneMin = z.Min,
+                        ZoneMax = z.Max,
+                        MFE = 0.0,
+                        MAE = 0.0,
+                        BarsHeld = 0
+                    });
+                }
                 plannedStopPrice = 0.0;
                 return;
             }
@@ -1401,7 +1574,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             tradeZone = new Zone
             {
-                HasA = z.HasA, HasD = z.HasD, HasW = z.HasW,
+                HasA = z.HasA, HasD = z.HasD, HasW = z.HasW, HasG = z.HasG,
                 Min = z.Min, Max = z.Max
             };
             tradeTag = tradeZone.Tag;
@@ -1614,6 +1787,29 @@ namespace NinjaTrader.NinjaScript.Strategies
                         "{0:yyyy-MM-dd HH:mm} FILL REJECTED | SL {1:F2} pts > max {2:F2} — flattening",
                         time, stopPoints, MaxStopPoints));
 
+                    // No shadow to track: the trade was filled and flattened
+                    // at once, so its outcome is known. Log it as missed.
+                    if (State == State.Realtime)
+                    {
+                        WriteSkippedRow(new ShadowTrade
+                        {
+                            SignalTime = time,
+                            Direction = isLong ? "Long" : "Short",
+                            Pillar = tradeTag,
+                            AnchorTag = tradeAnchorTag,
+                            SignalPx = price,
+                            StopPx = plannedStopPrice,
+                            StopPts = stopPoints,
+                            Atr = atr14[0],
+                            TgtPts = 0.0,
+                            ZoneMin = tradeZoneMin,
+                            ZoneMax = tradeZoneMax,
+                            MFE = 0.0,
+                            MAE = 0.0,
+                            BarsHeld = 0
+                        }, "FILL_REJECTED_SL", "FLATTENED");
+                    }
+
                     if (isLong)
                     {
                         ExitLong("MaxStopExceeded", currentSignalName);
@@ -1728,7 +1924,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         }
                     }
 
-                    // Daily / Weekly outcomes.
+                    // Daily / Weekly / Gann outcomes.
                     if (tz != null && tz.HasD)
                     {
                         RegisterLevelOutcome(daily, isStop);
@@ -1736,6 +1932,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (tz != null && tz.HasW)
                     {
                         RegisterLevelOutcome(weekly, isStop);
+                    }
+                    if (tz != null && tz.HasG)
+                    {
+                        RegisterLevelOutcome(gann, isStop);
                     }
 
                     Print(string.Format(
@@ -1785,6 +1985,99 @@ namespace NinjaTrader.NinjaScript.Strategies
                 tradeZone = null;
                 return;
             }
+        }
+        #endregion
+
+        #region Skipped-trade log (v1.1.1)
+        // ---------------------------------------------------------------------
+        // A blocked setup is shadow-tracked bar by bar: did its would-be target
+        // or would-be stop print first? Written to skipped_trades_<Name>.csv
+        // only when the outcome is known (or RTH end leaves it OPEN).
+        // ---------------------------------------------------------------------
+        private void UpdateShadowTrades()
+        {
+            if (pendingShadows.Count == 0)
+            {
+                return;
+            }
+
+            bool rthEnded = ToTime(Time[0]) >= RTHEndHHMMSS;
+
+            for (int i = pendingShadows.Count - 1; i >= 0; i--)
+            {
+                ShadowTrade s = pendingShadows[i];
+                s.BarsHeld++;
+
+                bool isLong = s.Direction == "Long";
+                double targetPx = isLong ? s.SignalPx + s.TgtPts : s.SignalPx - s.TgtPts;
+
+                if (isLong)
+                {
+                    s.MFE = Math.Max(s.MFE, High[0] - s.SignalPx);
+                    s.MAE = Math.Max(s.MAE, s.SignalPx - Low[0]);
+                }
+                else
+                {
+                    s.MFE = Math.Max(s.MFE, s.SignalPx - Low[0]);
+                    s.MAE = Math.Max(s.MAE, High[0] - s.SignalPx);
+                }
+
+                bool hitTgt = isLong ? High[0] >= targetPx : Low[0] <= targetPx;
+                bool hitStop = isLong ? Low[0] <= s.StopPx : High[0] >= s.StopPx;
+
+                string outcome = null;
+                if (hitTgt && hitStop)
+                {
+                    outcome = "AMBIG";
+                }
+                else if (hitTgt)
+                {
+                    outcome = "WIN";
+                }
+                else if (hitStop)
+                {
+                    outcome = "LOSS";
+                }
+                else if (rthEnded || s.SignalTime.Date != Time[0].Date)
+                {
+                    outcome = "OPEN";
+                }
+
+                if (outcome != null)
+                {
+                    WriteSkippedRow(s, "BLOCKED_SL", outcome);
+                    pendingShadows.RemoveAt(i);
+                }
+            }
+        }
+
+        private void WriteSkippedRow(ShadowTrade s, string stage, string outcome)
+        {
+            if (skippedLog == null)
+            {
+                return;
+            }
+
+            skippedLog.WriteLine(string.Join(",",
+                s.SignalTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                s.Direction,
+                s.Pillar,
+                s.AnchorTag,
+                s.SignalPx.ToString("F2"),
+                s.StopPx.ToString("F2"),
+                s.StopPts.ToString("F2"),
+                s.Atr.ToString("F2"),
+                (s.StopPts / Math.Max(0.01, s.Atr)).ToString("F2"),
+                (s.StopPts / Math.Max(0.01, s.Atr) * 100.0).ToString("F0"),
+                s.TgtPts.ToString("F2"),
+                stage,
+                s.ZoneMin.ToString("F2"),
+                s.ZoneMax.ToString("F2"),
+                outcome,
+                s.BarsHeld,
+                s.MFE.ToString("F2"),
+                s.MAE.ToString("F2")));
+            skippedLog.Flush();
         }
         #endregion
 
@@ -1982,10 +2275,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool EnableWeeklyVWAP { get; set; }
 
         [NinjaScriptProperty]
+        [Display(Name = "Enable Gann Levels", Description = "Trade the nearest Gann number as a peer level.", Order = 7, GroupName = "03 | Arming / Contact")]
+        public bool EnableGannLevels { get; set; }
+
+        [NinjaScriptProperty]
         [Range(0.0, 20.0)]
         [Display(Name = "Confluence Tolerance (pts)",
             Description = "Eligible levels within this distance merge into one zone.",
-            Order = 7, GroupName = "03 | Arming / Contact")]
+            Order = 8, GroupName = "03 | Arming / Contact")]
         public double ConfluenceTolerancePoints { get; set; }
 
         // 04 | Trade Management
