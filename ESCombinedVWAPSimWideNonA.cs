@@ -12,6 +12,20 @@
 // skipped_trades_ESCombinedVWAPSimWideNonA.csv, separate from live.
 // Run on SIM only, in parallel with live ESCombinedVWAPSim.
 //
+// Added Nov 15, 2026 (second build, same day):
+// - Opening-range leg (1-min): range = first 1-min candle after RTH
+//   open; break of the range on a 1-min close enters (long/short),
+//   first hour only (to 09:30 CT), one ORB trade per day; stop =
+//   opposite end of the opening candle, no points cap; no fixed
+//   target, exit only on a 1-min close across the 9 EMA (below for
+//   longs, above for shorts). Stop halving applies as normal. ORB
+//   trades log with Tag ORB. Entry is on the candle close, not a
+//   resting stop order.
+// - BigBody anchors no longer need a pocket-pivot combo: any
+//   blue/purple candle passing the BigBody size test anchors (a run
+//   anchors at its first bar). Swing anchors still need the
+//   pocket-pivot combo plus confirmation.
+//
 // v1.1.1 (Nov 12, 2026): Skipped-trade log + shadow outcomes. Trades blocked
 // by the max-stop gate are now logged to skipped_trades_ESCombinedVWAPSimWideNonA.csv
 // (same folder as the trade log, same EnableTradeLog switch). Pre-entry blocks
@@ -299,6 +313,18 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool dailyProfitHit;
 
         // ---------------------------------------------------------------------
+        // Opening-range leg (1-min series)
+        // ---------------------------------------------------------------------
+        private EMA emaOrb;
+        private bool orbReady;
+        private double orbHigh;
+        private double orbLow;
+        private bool orbTradedToday;
+        private bool orbExitSent;
+        private bool tradeIsOrb;
+        private DateTime orbDate;
+
+        // ---------------------------------------------------------------------
         // Diagnostics
         // ---------------------------------------------------------------------
         private StreamWriter tradeLog;
@@ -386,10 +412,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnableTradeLog = true;
                 DrawAnchors = true;
 
+                // 08 | Opening Range (1-min leg)
+                EnableOrb = true;
+                OrbEntryEndHHMMSS = 93000;
+                OrbEmaPeriod = 9;
+
                 AddPlot(new Stroke(Brushes.Gold, 2), PlotStyle.Line, "AVWAP");
                 AddPlot(new Stroke(Brushes.DodgerBlue, 1), PlotStyle.Line, "DVWAP");
                 AddPlot(new Stroke(Brushes.OrangeRed, 1), PlotStyle.Line, "WVWAP");
                 AddPlot(new Stroke(Brushes.Purple, 1), PlotStyle.Line, "GANN");
+            }
+            else if (State == State.Configure)
+            {
+                // 1-minute series for the opening-range leg (BarsInProgress 1).
+                AddDataSeries(BarsPeriodType.Minute, 1);
             }
             else if (State == State.DataLoaded)
             {
@@ -399,6 +435,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 isRedBar = new Series<bool>(this, MaximumBarsLookBack.Infinite);
 
                 atr14 = ATR(ATRPeriod);
+                emaOrb = EMA(Closes[1], OrbEmaPeriod);
                 volSma = SMA(Volume, VolumeAverageLength);
 
                 state = AnchorState.Idle;
@@ -410,6 +447,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 tradeZone = null;
                 contactBar = -1;
                 lastResetDate = Core.Globals.MinDate;
+                orbDate = Core.Globals.MinDate;
                 lastAnchorKillDate = Core.Globals.MinDate;
                 plotStartBar = -1;
 
@@ -480,6 +518,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         #region OnBarUpdate
         protected override void OnBarUpdate()
         {
+            // 1-minute series: opening-range leg only. Everything below
+            // runs on the primary (5-min) series.
+            if (BarsInProgress == 1)
+            {
+                HandleOrbBar();
+                return;
+            }
+
             // Daily / Weekly VWAP accumulate from the very first bar so the
             // weekly has full history by the time trading is allowed.
             UpdateDailyWeeklyVwaps();
@@ -953,8 +999,73 @@ namespace NinjaTrader.NinjaScript.Strategies
         #endregion
 
         #region Candidate Detection
+        // BigBody without a pocket pivot: any blue (bullish) / purple
+        // (bearish) candle passing the BigBody size test anchors.
+        // Direction is Close vs prior Close, the same convention as
+        // the pocket-pivot classification. A run of consecutive
+        // same-direction BigBody candles anchors at its first bar,
+        // mirroring the pocket-pivot run rule. Swing anchors still
+        // need the pocket-pivot combo plus confirmation.
+        private bool TryInstallSingleBarBigBody()
+        {
+            double atrNow = atr14[0];
+            if (atrNow <= 0.0 || !IsBigBody(0, atrNow))
+            {
+                return false;
+            }
+
+            bool bull = Close[0] > Close[1];
+            bool bear = Close[0] < Close[1];
+            if (!bull && !bear)
+            {
+                return false;
+            }
+
+            int firstOffset = 0;
+            while (firstOffset + 2 <= CurrentBar
+                && atr14[firstOffset + 1] > 0.0
+                && ((bull && Close[firstOffset + 1] > Close[firstOffset + 2])
+                    || (bear && Close[firstOffset + 1] < Close[firstOffset + 2]))
+                && IsBigBody(firstOffset + 1, atr14[firstOffset + 1]))
+            {
+                firstOffset++;
+            }
+
+            int candidateBar = CurrentBar - firstOffset;
+
+            if (state != AnchorState.Idle && candidateBar <= comboEndBar)
+            {
+                return false;
+            }
+
+            if (hasPendingSwing && candidateBar == pendingSwingBar)
+            {
+                return false;
+            }
+
+            int currentTime = ToTime(Time[0]);
+            if (currentTime > NoNewAnchorHHMMSS && currentTime < RTHEndHHMMSS)
+            {
+                return false;
+            }
+
+            if (atr14[firstOffset] <= 0.0)
+            {
+                return false;
+            }
+
+            InstallAnchor(candidateBar, atr14[firstOffset], "BigBody");
+            return true;
+        }
+
         private void TryDetectCandidate()
         {
+            // BigBody without a pocket pivot anchors on its own candle.
+            if (TryInstallSingleBarBigBody())
+            {
+                return;
+            }
+
             int comboLen = 0;
             bool isBullCombo = false;
 
@@ -1626,6 +1737,147 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
         #endregion
 
+        #region Opening Range (1-min leg)
+        // Opening-range break on the 1-minute series (BarsInProgress 1).
+        // Range = the first 1-min candle after the RTH open (opens 08:30,
+        // closes 08:31 Central). A 1-min close beyond the range enters,
+        // first hour only (to OrbEntryEndHHMMSS), one ORB trade per day.
+        // Stop = opposite end of the opening candle, no points cap. No
+        // fixed target: the trade exits only on a 1-min close across the
+        // 9 EMA (below for longs, above for shorts), on the stop, or at
+        // RTH flatten. Stop halving applies as normal. Entry is on the
+        // candle close, not a resting stop order.
+        private void HandleOrbBar()
+        {
+            // Daily reset for the ORB leg.
+            if (orbDate.Date != Time[0].Date)
+            {
+                orbDate = Time[0].Date;
+                orbHigh = 0.0;
+                orbLow = 0.0;
+                orbReady = false;
+                orbTradedToday = false;
+                orbExitSent = false;
+            }
+
+            if (!EnableOrb)
+            {
+                return;
+            }
+
+            // EMA exit for an open ORB trade, on every 1-min close.
+            if (tradeIsOrb && !orbExitSent
+                && Position.MarketPosition != MarketPosition.Flat
+                && !double.IsNaN(emaOrb[0]))
+            {
+                if (Position.MarketPosition == MarketPosition.Long
+                    && Close[0] < emaOrb[0])
+                {
+                    orbExitSent = true;
+                    ExitLong("OrbEmaExit", currentSignalName);
+                    Print(string.Format(
+                        "{0:yyyy-MM-dd HH:mm} ORB EXIT LONG | 1-min close {1:F2} < 9 EMA {2:F2}",
+                        Time[0], Close[0], emaOrb[0]));
+                }
+                else if (Position.MarketPosition == MarketPosition.Short
+                    && Close[0] > emaOrb[0])
+                {
+                    orbExitSent = true;
+                    ExitShort("OrbEmaExit", currentSignalName);
+                    Print(string.Format(
+                        "{0:yyyy-MM-dd HH:mm} ORB EXIT SHORT | 1-min close {1:F2} > 9 EMA {2:F2}",
+                        Time[0], Close[0], emaOrb[0]));
+                }
+            }
+
+            // Range set: the 1-min bar that opens at the RTH start.
+            int openTime = ToTime(Time[0].AddMinutes(-1));
+            if (openTime == RTHStartHHMMSS && !orbReady)
+            {
+                if (High[0] > Low[0])
+                {
+                    orbHigh = High[0];
+                    orbLow = Low[0];
+                    orbReady = true;
+                    Print(string.Format(
+                        "{0:yyyy-MM-dd HH:mm} ORB RANGE | [{1:F2}, {2:F2}] width {3:F2}pts",
+                        Time[0], orbLow, orbHigh, orbHigh - orbLow));
+                }
+                return;
+            }
+
+            // Entry: break of the range on a 1-min close, first hour only.
+            if (!orbReady || orbTradedToday)
+            {
+                return;
+            }
+
+            int currentTime = ToTime(Time[0]);
+            if (currentTime <= RTHStartHHMMSS || currentTime > OrbEntryEndHHMMSS)
+            {
+                return;
+            }
+
+            if (Position.MarketPosition != MarketPosition.Flat || inTrade)
+            {
+                return;
+            }
+
+            if (dailyLossHit || dailyProfitHit)
+            {
+                return;
+            }
+
+            if (dailyTradeCount >= MaxTradesPerDay)
+            {
+                return;
+            }
+
+            if (CooldownBars > 0 && lastExitBar >= 0
+                && CurrentBars[0] - lastExitBar < CooldownBars)
+            {
+                return;
+            }
+
+            bool longBreak = Close[0] > orbHigh;
+            bool shortBreak = Close[0] < orbLow;
+            if (!longBreak && !shortBreak)
+            {
+                return;
+            }
+
+            double stopPrice = longBreak ? orbLow - TickSize : orbHigh + TickSize;
+            currentSignalName = longBreak ? "OrbLong" : "OrbShort";
+            plannedStopPrice = stopPrice;
+            tradeIsOrb = true;
+            orbExitSent = false;
+            tradeTag = "ORB";
+            tradeAnchorTag = string.Empty;
+            tradeZone = null;
+            tradeZoneMin = orbLow;
+            tradeZoneMax = orbHigh;
+            tradeSLPts = Math.Abs(Close[0] - stopPrice);
+            tradeTgtPts = 0.0;
+
+            SetStopLoss(currentSignalName, CalculationMode.Price, stopPrice, false);
+
+            if (longBreak)
+            {
+                EnterLong(ContractQty, currentSignalName);
+            }
+            else
+            {
+                EnterShort(ContractQty, currentSignalName);
+            }
+
+            inTrade = true;
+
+            Print(string.Format(
+                "{0:yyyy-MM-dd HH:mm} ORB SIGNAL {1} | range [{2:F2}, {3:F2}] close={4:F2} stop={5:F2}",
+                Time[0], longBreak ? "LONG" : "SHORT", orbLow, orbHigh, Close[0], stopPrice));
+        }
+        #endregion
+
         #region OnOrderUpdate
         protected override void OnOrderUpdate(Order order, double limitPrice,
             double stopPrice, int quantity, int filled, double averageFillPrice,
@@ -1663,6 +1915,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             plannedStopPrice = 0.0;
             currentSignalName = null;
             tradeTag = null;
+            tradeIsOrb = false;
         }
         #endregion
 
@@ -1799,7 +2052,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 double maxStop = MaxStopForZone(tradeZone != null && tradeZone.HasA);
 
-                if (stopPoints > maxStop)
+                if (!tradeIsOrb && stopPoints > maxStop)
                 {
                     fillRejected = true;
                     dailyTradeCount--;
@@ -1841,6 +2094,25 @@ namespace NinjaTrader.NinjaScript.Strategies
                     {
                         ExitShort("MaxStopExceeded", currentSignalName);
                     }
+                    return;
+                }
+
+                // Opening-range trade: no points cap (bypassed above),
+                // no fixed target. Stop is the opposite end of the opening
+                // candle; the trade exits only on a 1-min close across the
+                // 9 EMA, on the stop, or at RTH flatten.
+                if (tradeIsOrb)
+                {
+                    SetStopLoss(currentSignalName, CalculationMode.Price, plannedStopPrice, false);
+                    initialStopTicks = Math.Round(stopPoints / TickSize);
+                    stopHalved = false;
+                    tradeSLPts = stopPoints;
+                    tradeTgtPts = 0.0;
+                    orbTradedToday = true;
+
+                    Print(string.Format(
+                        "{0:yyyy-MM-dd HH:mm} {1} ORB FILL @ {2:F2} | stop={3:F2} ({4:F2}pts) EMA exit only",
+                        time, isLong ? "LONG" : "SHORT", price, plannedStopPrice, stopPoints));
                     return;
                 }
 
@@ -1998,6 +2270,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
 
                 // Clear per-trade state
+                tradeIsOrb = false;
+                orbExitSent = false;
                 lastEntryPrice = 0.0;
                 lastEntryDirection = 0;
                 currentSignalName = null;
@@ -2397,6 +2671,21 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Draw Anchors / Contacts", Order = 2, GroupName = "07 | Diagnostics")]
         public bool DrawAnchors { get; set; }
+
+        // 08 | Opening Range (1-min leg)
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Opening Range", Order = 1, GroupName = "08 | Opening Range")]
+        public bool EnableOrb { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 235959)]
+        [Display(Name = "ORB Entry End (HHMMSS)", Order = 2, GroupName = "08 | Opening Range")]
+        public int OrbEntryEndHHMMSS { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(2, 50)]
+        [Display(Name = "ORB Exit EMA Period", Order = 3, GroupName = "08 | Opening Range")]
+        public int OrbEmaPeriod { get; set; }
         #endregion
     }
 }
