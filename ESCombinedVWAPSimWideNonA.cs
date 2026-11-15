@@ -576,9 +576,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (wasInPosition)
                 {
                     wasInPosition = false;
-                    if (lastExitBar < CurrentBar)
+                    // lastExitBar is always a primary (5-min) bar index.
+                    if (lastExitBar < CurrentBars[0])
                     {
-                        lastExitBar = CurrentBar;
+                        lastExitBar = CurrentBars[0];
                     }
                     if (state == AnchorState.InTrade)
                     {
@@ -591,7 +592,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             else
             {
                 wasInPosition = true;
-                TrackExcursion();
+                // ORB trades track excursion on the 1-min series instead.
+                if (!tradeIsOrb)
+                {
+                    TrackExcursion();
+                }
             }
 
             // -----------------------------------------------------------------
@@ -663,7 +668,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             // -----------------------------------------------------------------
             // Manage an open trade
             // -----------------------------------------------------------------
-            if (EnableStopHalving)
+            // ORB trades are managed on the 1-min series (HandleOrbBar).
+            if (EnableStopHalving && !tradeIsOrb)
             {
                 ManageStopHalving();
             }
@@ -1029,6 +1035,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
 
+            // If the pocket-pivot combo path would install this as a
+            // BigBody anchor (as live does), defer to it so the anchor
+            // logs as "BigBody", not "BigBody-NoPP".
+            if (PocketPivotComboQualifiesBigBody())
+            {
+                return false;
+            }
+
             int firstOffset = 0;
             while (firstOffset + 2 <= CurrentBar
                 && atr14[firstOffset + 1] > 0.0
@@ -1063,7 +1077,63 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             InstallAnchor(candidateBar, atr14[firstOffset], "BigBody", true);
+
+            // A pending Swing older than the BigBody anchor just installed
+            // must not confirm later and replace it.
+            if (anchorBar == candidateBar && hasPendingSwing
+                && pendingSwingBar < candidateBar)
+            {
+                Print(string.Format(
+                    "{0:yyyy-MM-dd HH:mm} SWING DISCARDED | bar {1:HH:mm} superseded by BigBody anchor #{2}",
+                    Time[0], Time[CurrentBar - pendingSwingBar], anchorSeq));
+                ClearPendingSwing();
+            }
             return true;
+        }
+
+        // Read-only mirror of the combo detection in TryDetectCandidate:
+        // true when a pocket-pivot combo is present on this bar and its
+        // first-of-run candidate passes IsBigBody, i.e. the combo path
+        // (and live) would tag the anchor "BigBody".
+        private bool PocketPivotComboQualifiesBigBody()
+        {
+            int comboLen = 0;
+            bool isBullCombo = false;
+
+            if (isBullPP[0] && isBullPP[1])
+            {
+                comboLen = 2;
+                isBullCombo = true;
+            }
+            else if (isBearPP[0] && isBearPP[1])
+            {
+                comboLen = 2;
+            }
+            else if (isBullPP[0] && isGreenBar[1] && isBullPP[2])
+            {
+                comboLen = 3;
+                isBullCombo = true;
+            }
+            else if (isBearPP[0] && isRedBar[1] && isBearPP[2])
+            {
+                comboLen = 3;
+            }
+
+            if (comboLen == 0)
+            {
+                return false;
+            }
+
+            int firstOffset = comboLen - 1;
+            while (firstOffset + 1 <= CurrentBar
+                && ((isBullCombo && isBullPP[firstOffset + 1])
+                    || (!isBullCombo && isBearPP[firstOffset + 1])))
+            {
+                firstOffset++;
+            }
+
+            double atrAtCandidate = atr14[firstOffset];
+            return atrAtCandidate > 0.0 && IsBigBody(firstOffset, atrAtCandidate);
         }
 
         private void TryDetectCandidate()
@@ -1501,6 +1571,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             int confirmedBar = pendingSwingBar;
             double confirmedATR = pendingSwingATR;
 
+            // Never let an older pending Swing replace a newer BigBody anchor.
+            if (IsLiveAnchorState() && anchorTag == "BigBody" && confirmedBar < anchorBar)
+            {
+                Print(string.Format(
+                    "{0:yyyy-MM-dd HH:mm} SWING DISCARDED | bar {1:HH:mm} older than BigBody anchor #{2}",
+                    Time[0], Time[CurrentBar - confirmedBar], anchorSeq));
+                ClearPendingSwing();
+                return;
+            }
+
             if (extremeHolds)
             {
                 Print(string.Format(
@@ -1776,6 +1856,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!EnableOrb)
             {
                 return;
+            }
+
+            // ORB trade management on 1-min bars: excursion and stop
+            // halving see only post-entry 1-min price action.
+            if (tradeIsOrb && Position.MarketPosition != MarketPosition.Flat)
+            {
+                TrackExcursion();
+                if (EnableStopHalving)
+                {
+                    ManageStopHalving();
+                }
             }
 
             // EMA exit for an open ORB trade, on every 1-min close.
@@ -2153,9 +2244,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             // -----------------------------------------------------------------
             if (action == OrderAction.Sell || action == OrderAction.BuyToCover)
             {
-                if (lastExitBar < CurrentBar)
+                // Exit fills can arrive while the 1-min series is in
+                // progress; record the primary (5-min) bar index so the
+                // cooldown checks compare like with like.
+                if (lastExitBar < CurrentBars[0])
                 {
-                    lastExitBar = CurrentBar;
+                    lastExitBar = CurrentBars[0];
                 }
 
                 if (Position.MarketPosition == MarketPosition.Flat)
