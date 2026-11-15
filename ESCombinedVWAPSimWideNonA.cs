@@ -25,6 +25,13 @@
 //   blue/purple candle passing the BigBody size test anchors (a run
 //   anchors at its first bar). Swing anchors still need the
 //   pocket-pivot combo plus confirmation.
+// Logging per pillar: zone trades log Tag = zone pillars (A, D, W,
+// G or combos) and AnchorTag = Swing / BigBody / News; a BigBody
+// anchor that formed WITHOUT a pocket pivot logs as BigBody-NoPP,
+// so the later review can split BigBody results into PP-backed
+// (would also have traded on live) vs standalone (variant-only).
+// ORB trades log Tag ORB, AnchorTag empty, ZoneMin/ZoneMax = the
+// opening range, TgtPts 0.
 //
 // v1.1.1 (Nov 12, 2026): Skipped-trade log + shadow outcomes. Trades blocked
 // by the max-stop gate are now logged to skipped_trades_ESCombinedVWAPSimWideNonA.csv
@@ -201,6 +208,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double anchorClose;
         private double anchorATR;
         private string anchorTag = string.Empty;
+        private bool anchorStandaloneBigBody;
 
         private bool hasPendingSwing;
         private int pendingSwingBar = -1;
@@ -1054,7 +1062,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return false;
             }
 
-            InstallAnchor(candidateBar, atr14[firstOffset], "BigBody");
+            InstallAnchor(candidateBar, atr14[firstOffset], "BigBody", true);
             return true;
         }
 
@@ -1262,7 +1270,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             return closeTime;
         }
 
-        private void InstallAnchor(int candidateBar, double atrAtCandidate, string qualificationTag)
+        private void InstallAnchor(int candidateBar, double atrAtCandidate, string qualificationTag, bool standaloneBigBody = false)
         {
             int firstOffset = CurrentBar - candidateBar;
             bool replacing = state != AnchorState.Idle;
@@ -1295,6 +1303,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             anchorClose = Close[firstOffset];
             anchorATR = atrAtCandidate;
             anchorTag = qualificationTag;
+            anchorStandaloneBigBody = standaloneBigBody;
 
             RebuildAvwapPlot(firstOffset);
 
@@ -1674,7 +1683,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         SignalTime = Time[0],
                         Direction = longTrigger ? "Long" : "Short",
                         Pillar = z.Tag,
-                        AnchorTag = z.HasA ? anchorTag : string.Empty,
+                        AnchorTag = z.HasA ? (anchorTag == "BigBody" && anchorStandaloneBigBody ? "BigBody-NoPP" : anchorTag) : string.Empty,
                         SignalPx = Close[0],
                         StopPx = plannedStopPrice,
                         StopPts = stopProxyPoints,
@@ -1704,6 +1713,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             };
             tradeTag = tradeZone.Tag;
             tradeAnchorTag = z.HasA ? anchorTag : string.Empty;
+            if (z.HasA && anchorTag == "BigBody" && anchorStandaloneBigBody)
+            {
+                tradeAnchorTag = "BigBody-NoPP";
+            }
             tradeZoneMin = z.Min;
             tradeZoneMax = z.Max;
 
@@ -2393,6 +2406,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             anchorClose = 0.0;
             anchorATR = 0.0;
             anchorTag = string.Empty;
+            anchorStandaloneBigBody = false;
             cumPV = 0.0;
             cumV = 0.0;
             avwap = 0.0;
