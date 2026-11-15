@@ -32,10 +32,11 @@
 // (would also have traded on live) vs standalone (variant-only).
 // ORB trades log Tag ORB, AnchorTag empty, ZoneMin/ZoneMax = the
 // opening range, TgtPts 0.
-// Sim defaults (Nov 15): MaxTradesPerDay 20, DailyLossLimit $100,
-// DailyProfitLimit $100. Live runs 50/90; the variant sim runs looser
-// on count and tighter on dollars per his call, so the two books are
-// not compared on identical limits.
+// Sim defaults (Nov 15): MaxTradesPerDay 20, DailyLossLimit and
+// DailyProfitLimit $100,000 each, i.e. no daily limits for the sim
+// (his call); the params stay in place and are adjustable in the UI.
+// Live runs 50/90, so the two books are not compared on identical
+// daily limits.
 //
 // v1.1.1 (Nov 12, 2026): Skipped-trade log + shadow outcomes. Trades blocked
 // by the max-stop gate are now logged to skipped_trades_ESCombinedVWAPSimWideNonA.csv
@@ -417,8 +418,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // 06 | Risk controls
                 MaxTradesPerDay = 20;
-                DailyLossLimit = 100.0;
-                DailyProfitLimit = 100.0;
+                DailyLossLimit = 100000.0;
+                DailyProfitLimit = 100000.0;
 
                 // 07 | Diagnostics
                 EnableTradeLog = true;
