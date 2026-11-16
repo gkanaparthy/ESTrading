@@ -14,13 +14,16 @@
 //
 // Added Nov 15, 2026 (second build, same day):
 // - Opening-range leg (1-min): range = first 1-min candle after RTH
-//   open; break of the range on a 1-min close enters (long/short),
+//   open; resting stop orders (buy stop above the range high, sell
+//   stop below the range low) fill intrabar at the break (long/short),
 //   first hour only (to 09:30 CT), one ORB trade per day; stop =
 //   opposite end of the opening candle, no points cap; no fixed
 //   target, exit only on a 1-min close across the 9 EMA (below for
 //   longs, above for shorts). Stop halving applies as normal. ORB
-//   trades log with Tag ORB. Entry is on the candle close, not a
-//   resting stop order.
+//   trades log with Tag ORB. Nov 16: switched from candle-close
+//   entries to resting stops — the close entry lagged a full candle
+//   on the first sim run (Nov 16) and filled a candle late with a
+//   stop way too wide.
 // - BigBody anchors no longer need a pocket-pivot combo: any
 //   blue/purple candle passing the BigBody size test anchors (a run
 //   anchors at its first bar). Swing anchors still need the
@@ -334,6 +337,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double orbLow;
         private bool orbTradedToday;
         private bool orbExitSent;
+        private Order orbLongStopOrder;
+        private Order orbShortStopOrder;
+        private bool orbStopsPlaced;
         private bool tradeIsOrb;
         private DateTime orbDate;
 
@@ -1838,13 +1844,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         #region Opening Range (1-min leg)
         // Opening-range break on the 1-minute series (BarsInProgress 1).
         // Range = the first 1-min candle after the RTH open (opens 08:30,
-        // closes 08:31 Central). A 1-min close beyond the range enters,
-        // first hour only (to OrbEntryEndHHMMSS), one ORB trade per day.
+        // closes 08:31 Central). Resting stop orders placed when the range
+        // is set fill intrabar at the break, first hour only (to
+        // OrbEntryEndHHMMSS), one ORB trade per day; the other side is
+        // cancelled on fill, both are pulled at 09:30 if unfilled.
         // Stop = opposite end of the opening candle, no points cap. No
         // fixed target: the trade exits only on a 1-min close across the
         // 9 EMA (below for longs, above for shorts), on the stop, or at
-        // RTH flatten. Stop halving applies as normal. Entry is on the
-        // candle close, not a resting stop order.
+        // RTH flatten. Stop halving applies as normal.
         private void HandleOrbBar()
         {
             // Daily reset for the ORB leg.
@@ -1856,6 +1863,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 orbReady = false;
                 orbTradedToday = false;
                 orbExitSent = false;
+                orbLongStopOrder = null;
+                orbShortStopOrder = null;
+                orbStopsPlaced = false;
             }
 
             if (!EnableOrb)
@@ -1911,18 +1921,37 @@ namespace NinjaTrader.NinjaScript.Strategies
                     Print(string.Format(
                         "{0:yyyy-MM-dd HH:mm} ORB RANGE | [{1:F2}, {2:F2}] width {3:F2}pts",
                         Time[0], orbLow, orbHigh, orbHigh - orbLow));
+                    PlaceOrbStops();
                 }
                 return;
             }
 
-            // Entry: break of the range on a 1-min close, first hour only.
-            if (!orbReady || orbTradedToday)
+            // Expiry: pull both ORB stops at the first 1-min close after
+            // the entry window ends, if neither filled. orbStopsPlaced
+            // stays true, so they are never re-placed.
+            if (orbReady && !orbTradedToday
+                && (orbLongStopOrder != null || orbShortStopOrder != null)
+                && ToTime(Time[0]) > OrbEntryEndHHMMSS)
             {
-                return;
+                CancelOrbStops();
+                Print(string.Format(
+                    "{0:yyyy-MM-dd HH:mm} ORB STOPS EXPIRED | no fill by 09:30",
+                    Time[0]));
             }
+        }
 
-            int currentTime = ToTime(Time[0]);
-            if (currentTime <= RTHStartHHMMSS || currentTime > OrbEntryEndHHMMSS)
+        // Place the two resting ORB stop orders once per day, right after
+        // the range is set. The buy stop sits above the range high, the
+        // sell stop below the range low, so a fill happens intrabar at
+        // the break instead of a candle later. Entry bookkeeping lives
+        // in OnExecutionUpdate (only the fill tells us which side fired);
+        // the stop-loss for each side is attached here, opposite end of
+        // the opening range, same as the old close-entry path. The same
+        // gates the old entry block checked apply here: flat, no trade
+        // in progress, daily limits not hit, trade count and cooldown.
+        private void PlaceOrbStops()
+        {
+            if (orbStopsPlaced || orbTradedToday)
             {
                 return;
             }
@@ -1948,42 +1977,38 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            bool longBreak = Close[0] > orbHigh;
-            bool shortBreak = Close[0] < orbLow;
-            if (!longBreak && !shortBreak)
-            {
-                return;
-            }
+            SetStopLoss("OrbLong", CalculationMode.Price, orbLow - TickSize, false);
+            SetStopLoss("OrbShort", CalculationMode.Price, orbHigh + TickSize, false);
 
-            double stopPrice = longBreak ? orbLow - TickSize : orbHigh + TickSize;
-            currentSignalName = longBreak ? "OrbLong" : "OrbShort";
-            plannedStopPrice = stopPrice;
-            tradeIsOrb = true;
-            orbExitSent = false;
-            tradeTag = "ORB";
-            tradeAnchorTag = string.Empty;
-            tradeZone = null;
-            tradeZoneMin = orbLow;
-            tradeZoneMax = orbHigh;
-            tradeSLPts = Math.Abs(Close[0] - stopPrice);
-            tradeTgtPts = 0.0;
+            orbLongStopOrder = EnterLongStopMarket(ContractQty, orbHigh + TickSize, "OrbLong");
+            orbShortStopOrder = EnterShortStopMarket(ContractQty, orbLow - TickSize, "OrbShort");
 
-            SetStopLoss(currentSignalName, CalculationMode.Price, stopPrice, false);
-
-            if (longBreak)
-            {
-                EnterLong(ContractQty, currentSignalName);
-            }
-            else
-            {
-                EnterShort(ContractQty, currentSignalName);
-            }
-
-            inTrade = true;
+            orbStopsPlaced = true;
 
             Print(string.Format(
-                "{0:yyyy-MM-dd HH:mm} ORB SIGNAL {1} | range [{2:F2}, {3:F2}] close={4:F2} stop={5:F2}",
-                Time[0], longBreak ? "LONG" : "SHORT", orbLow, orbHigh, Close[0], stopPrice));
+                "{0:yyyy-MM-dd HH:mm} ORB STOPS PLACED | buy stop {1:F2} / sell stop {2:F2} (range [{3:F2}, {4:F2}])",
+                Time[0], orbHigh + TickSize, orbLow - TickSize, orbLow, orbHigh));
+        }
+
+        // Cancel both pending ORB stop orders, if still working, and clear
+        // the references. Safe to call when none are pending.
+        private void CancelOrbStops()
+        {
+            CancelOrbStop(orbLongStopOrder);
+            CancelOrbStop(orbShortStopOrder);
+            orbLongStopOrder = null;
+            orbShortStopOrder = null;
+        }
+
+        private void CancelOrbStop(Order order)
+        {
+            if (order != null
+                && order.OrderState != OrderState.Filled
+                && order.OrderState != OrderState.Cancelled
+                && order.OrderState != OrderState.Rejected)
+            {
+                CancelOrder(order);
+            }
         }
         #endregion
 
@@ -1992,6 +2017,30 @@ namespace NinjaTrader.NinjaScript.Strategies
             double stopPrice, int quantity, int filled, double averageFillPrice,
             OrderState orderState, DateTime time, ErrorCode error, string comment)
         {
+            // ORB stop orders have no entry bookkeeping yet (the shared
+            // fields are only set at fill), so the check below would skip
+            // them. Handle a rejected or cancelled stop here instead, so
+            // it does not leave a stale reference behind. A fill is
+            // handled in OnExecutionUpdate, not here.
+            if (order != null
+                && (order.Name == "OrbLong" || order.Name == "OrbShort")
+                && (orderState == OrderState.Rejected
+                    || (orderState == OrderState.Cancelled && filled == 0)))
+            {
+                if (order.Name == "OrbLong")
+                {
+                    orbLongStopOrder = null;
+                }
+                else
+                {
+                    orbShortStopOrder = null;
+                }
+                Print(string.Format(
+                    "{0:yyyy-MM-dd HH:mm} ORB STOP {1} | {2}",
+                    time, order.Name, orderState));
+                return;
+            }
+
             if (order == null || string.IsNullOrEmpty(currentSignalName))
             {
                 return;
@@ -2138,6 +2187,43 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (action == OrderAction.Buy || action == OrderAction.SellShort)
             {
                 bool isLong = action == OrderAction.Buy;
+
+                // ORB stop-order fill: entry bookkeeping lives here, not at
+                // submission, because only the fill tells us which side
+                // fired. Set the shared fields before the common fill logic
+                // below reads them (plannedStopPrice, tradeIsOrb, and the
+                // fill-rejection bypass all depend on them).
+                if (execution.Order.Name == "OrbLong"
+                    || execution.Order.Name == "OrbShort")
+                {
+                    bool orbLongFill = execution.Order.Name == "OrbLong";
+                    currentSignalName = execution.Order.Name;
+                    tradeIsOrb = true;
+                    orbExitSent = false;
+                    tradeTag = "ORB";
+                    tradeAnchorTag = string.Empty;
+                    tradeZone = null;
+                    tradeZoneMin = orbLow;
+                    tradeZoneMax = orbHigh;
+                    tradeTgtPts = 0.0;
+                    plannedStopPrice = orbLongFill
+                        ? orbLow - TickSize
+                        : orbHigh + TickSize;
+                    inTrade = true;
+
+                    // OCO: the other side's stop is pulled immediately.
+                    CancelOrbStops();
+
+                    Print(string.Format(
+                        "{0:yyyy-MM-dd HH:mm} ORB STOP FILL {1} @ {2:F2} | range [{3:F2}, {4:F2}]",
+                        time, orbLongFill ? "LONG" : "SHORT", price, orbLow, orbHigh));
+                }
+                else
+                {
+                    // A zone trade filled while ORB stops were working: one
+                    // position at a time, so pull both ORB stops.
+                    CancelOrbStops();
+                }
 
                 lastEntryPrice = price;
                 lastEntryDirection = isLong ? 1 : -1;
