@@ -1980,8 +1980,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             SetStopLoss("OrbLong", CalculationMode.Price, orbLow - TickSize, false);
             SetStopLoss("OrbShort", CalculationMode.Price, orbHigh + TickSize, false);
 
-            orbLongStopOrder = EnterLongStopMarket(ContractQty, orbHigh + TickSize, "OrbLong");
-            orbShortStopOrder = EnterShortStopMarket(ContractQty, orbLow - TickSize, "OrbShort");
+            // liveUntilCancelled: the managed approach auto-cancels an unfilled
+            // entry order at the next bar close, which killed the ORB stops one
+            // minute after placement (08:32 on Nov 17). The stops must survive
+            // across 1-min bars until a fill, the OCO pull, or the 09:30 expiry.
+            orbLongStopOrder = EnterLongStopMarket(ContractQty, orbHigh + TickSize, "OrbLong", true);
+            orbShortStopOrder = EnterShortStopMarket(ContractQty, orbLow - TickSize, "OrbShort", true);
 
             orbStopsPlaced = true;
 
