@@ -1984,8 +1984,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             // entry order at the next bar close, which killed the ORB stops one
             // minute after placement (08:32 on Nov 17). The stops must survive
             // across 1-min bars until a fill, the OCO pull, or the 09:30 expiry.
-            orbLongStopOrder = EnterLongStopMarket(ContractQty, orbHigh + TickSize, "OrbLong", true);
-            orbShortStopOrder = EnterShortStopMarket(ContractQty, orbLow - TickSize, "OrbShort", true);
+            // NT8's liveUntilCancelled overload is (qty, liveUntilCancelled,
+            // barsInProgressIndex, price, signalName); index 0 is the primary
+            // series, same as the zone entries. The 4-arg form does not exist.
+            orbLongStopOrder = EnterLongStopMarket(ContractQty, true, 0, orbHigh + TickSize, "OrbLong");
+            orbShortStopOrder = EnterShortStopMarket(ContractQty, true, 0, orbLow - TickSize, "OrbShort");
 
             orbStopsPlaced = true;
 
