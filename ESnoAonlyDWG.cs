@@ -102,7 +102,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             public DateTime SignalTime;
             public string Direction;   // "Long" / "Short"
-            public string Pillar;      // zone Tag: A, D, W, G, D+W, ...
+            public string Pillar;      // zone Tag: D, W, G, D+W, ...
             public string AnchorTag;   // Always empty for D/W/G zones (kept for the log format)
             public double SignalPx;    // Close[0] at the signal bar (would-be entry proxy)
             public double StopPx;
@@ -119,7 +119,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #region Fields
         // ---------------------------------------------------------------------
-        // Bar classification
+        // Indicators
         // ---------------------------------------------------------------------
         private ATR atr14;
 
@@ -271,7 +271,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RTHStartHHMMSS = 083000;
                 RTHEndHHMMSS = 150000;
                 LastEntryHHMMSS = 143000;
-                NoNewAnchorHHMMSS = 143000;
                 FlattenAtRTHEnd = true;
 
                 // 06 | Risk controls
@@ -1341,7 +1340,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         // 02 | Indicators
         [NinjaScriptProperty]
         [Range(2, 100)]
-        [Display(Name = "ATR Period", Order = 1, GroupName = "02 | Anchor Qualification")]
+        [Display(Name = "ATR Period", Order = 1, GroupName = "02 | Indicators")]
         public int ATRPeriod { get; set; }
 
         // 03 | Arming / Contact
@@ -1429,11 +1428,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(0, 235959)]
         [Display(Name = "Last Entry (HHMMSS)", Order = 3, GroupName = "05 | Session")]
         public int LastEntryHHMMSS { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0, 235959)]
-        [Display(Name = "No New Anchor After (HHMMSS)", Order = 4, GroupName = "05 | Session")]
-        public int NoNewAnchorHHMMSS { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Flatten At RTH End", Order = 5, GroupName = "05 | Session")]
