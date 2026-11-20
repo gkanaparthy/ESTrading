@@ -24,15 +24,15 @@
 //   entries to resting stops — the close entry lagged a full candle
 //   on the first sim run (Nov 16) and filled a candle late with a
 //   stop way too wide.
-// - BigBody anchors no longer need a pocket-pivot combo: any
-//   blue/purple candle passing the BigBody size test anchors (a run
-//   anchors at its first bar). Swing anchors still need the
-//   pocket-pivot combo plus confirmation.
+// Nov 20, 2026: standalone BigBody anchors removed — a BigBody
+//   candle now anchors ONLY with a pocket-pivot combo (as live does).
+//   Swing anchors are behind the new EnableSwingAnchors parameter
+//   (default false); News anchors stay behind EnableNewsAnchor
+//   (default false). With both off, the only A anchors are
+//   pocket-pivot BigBody anchors. ORB is unchanged, gated by the
+//   existing EnableOrb parameter (default true).
 // Logging per pillar: zone trades log Tag = zone pillars (A, D, W,
-// G or combos) and AnchorTag = Swing / BigBody / News; a BigBody
-// anchor that formed WITHOUT a pocket pivot logs as BigBody-NoPP,
-// so the later review can split BigBody results into PP-backed
-// (would also have traded on live) vs standalone (variant-only).
+// G or combos) and AnchorTag = Swing / BigBody / News.
 // ORB trades log Tag ORB, AnchorTag empty, ZoneMin/ZoneMax = the
 // opening range, TgtPts 0.
 // Sim defaults (Nov 15): MaxTradesPerDay 20, DailyLossLimit and
@@ -216,7 +216,6 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double anchorClose;
         private double anchorATR;
         private string anchorTag = string.Empty;
-        private bool anchorStandaloneBigBody;
 
         private bool hasPendingSwing;
         private int pendingSwingBar = -1;
@@ -389,6 +388,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnableContinuationLock = true;
                 ContinuationLockMinBodyPoints = 1.0;
                 EnableNewsAnchor = false;
+                EnableSwingAnchors = false;
                 NewsAnchorTimes = "07:30,08:30,13:00";
                 NewsAnchorATRMult = 2.0;
                 NewsAnchorVolumeMult = 2.5;
@@ -1024,137 +1024,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         #endregion
 
         #region Candidate Detection
-        // BigBody without a pocket pivot: any blue (bullish) / purple
-        // (bearish) candle passing the BigBody size test anchors.
-        // Direction is Close vs prior Close, the same convention as
-        // the pocket-pivot classification. A run of consecutive
-        // same-direction BigBody candles anchors at its first bar,
-        // mirroring the pocket-pivot run rule. Swing anchors still
-        // need the pocket-pivot combo plus confirmation.
-        private bool TryInstallSingleBarBigBody()
-        {
-            double atrNow = atr14[0];
-            if (atrNow <= 0.0 || !IsBigBody(0, atrNow))
-            {
-                return false;
-            }
-
-            bool bull = Close[0] > Close[1];
-            bool bear = Close[0] < Close[1];
-            if (!bull && !bear)
-            {
-                return false;
-            }
-
-            // If the pocket-pivot combo path would install this as a
-            // BigBody anchor (as live does), defer to it so the anchor
-            // logs as "BigBody", not "BigBody-NoPP".
-            if (PocketPivotComboQualifiesBigBody())
-            {
-                return false;
-            }
-
-            int firstOffset = 0;
-            while (firstOffset + 2 <= CurrentBar
-                && atr14[firstOffset + 1] > 0.0
-                && ((bull && Close[firstOffset + 1] > Close[firstOffset + 2])
-                    || (bear && Close[firstOffset + 1] < Close[firstOffset + 2]))
-                && IsBigBody(firstOffset + 1, atr14[firstOffset + 1]))
-            {
-                firstOffset++;
-            }
-
-            int candidateBar = CurrentBar - firstOffset;
-
-            if (state != AnchorState.Idle && candidateBar <= comboEndBar)
-            {
-                return false;
-            }
-
-            if (hasPendingSwing && candidateBar == pendingSwingBar)
-            {
-                return false;
-            }
-
-            int currentTime = ToTime(Time[0]);
-            if (currentTime > NoNewAnchorHHMMSS && currentTime < RTHEndHHMMSS)
-            {
-                return false;
-            }
-
-            if (atr14[firstOffset] <= 0.0)
-            {
-                return false;
-            }
-
-            InstallAnchor(candidateBar, atr14[firstOffset], "BigBody", true);
-
-            // A pending Swing older than the BigBody anchor just installed
-            // must not confirm later and replace it.
-            if (anchorBar == candidateBar && hasPendingSwing
-                && pendingSwingBar < candidateBar)
-            {
-                Print(string.Format(
-                    "{0:yyyy-MM-dd HH:mm} SWING DISCARDED | bar {1:HH:mm} superseded by BigBody anchor #{2}",
-                    Time[0], Time[CurrentBar - pendingSwingBar], anchorSeq));
-                ClearPendingSwing();
-            }
-            return true;
-        }
-
-        // Read-only mirror of the combo detection in TryDetectCandidate:
-        // true when a pocket-pivot combo is present on this bar and its
-        // first-of-run candidate passes IsBigBody, i.e. the combo path
-        // (and live) would tag the anchor "BigBody".
-        private bool PocketPivotComboQualifiesBigBody()
-        {
-            int comboLen = 0;
-            bool isBullCombo = false;
-
-            if (isBullPP[0] && isBullPP[1])
-            {
-                comboLen = 2;
-                isBullCombo = true;
-            }
-            else if (isBearPP[0] && isBearPP[1])
-            {
-                comboLen = 2;
-            }
-            else if (isBullPP[0] && isGreenBar[1] && isBullPP[2])
-            {
-                comboLen = 3;
-                isBullCombo = true;
-            }
-            else if (isBearPP[0] && isRedBar[1] && isBearPP[2])
-            {
-                comboLen = 3;
-            }
-
-            if (comboLen == 0)
-            {
-                return false;
-            }
-
-            int firstOffset = comboLen - 1;
-            while (firstOffset + 1 <= CurrentBar
-                && ((isBullCombo && isBullPP[firstOffset + 1])
-                    || (!isBullCombo && isBearPP[firstOffset + 1])))
-            {
-                firstOffset++;
-            }
-
-            double atrAtCandidate = atr14[firstOffset];
-            return atrAtCandidate > 0.0 && IsBigBody(firstOffset, atrAtCandidate);
-        }
-
         private void TryDetectCandidate()
         {
-            // BigBody without a pocket pivot anchors on its own candle.
-            if (TryInstallSingleBarBigBody())
-            {
-                return;
-            }
-
             int comboLen = 0;
             bool isBullCombo = false;
 
@@ -1240,6 +1111,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             if (!isBigBody && !isSwing)
+            {
+                return;
+            }
+
+            // Swing anchors are off unless EnableSwingAnchors is set:
+            // a swing-only candidate neither pends nor installs.
+            if (!isBigBody && !EnableSwingAnchors)
             {
                 return;
             }
@@ -1351,7 +1229,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             return closeTime;
         }
 
-        private void InstallAnchor(int candidateBar, double atrAtCandidate, string qualificationTag, bool standaloneBigBody = false)
+        private void InstallAnchor(int candidateBar, double atrAtCandidate, string qualificationTag)
         {
             int firstOffset = CurrentBar - candidateBar;
             bool replacing = state != AnchorState.Idle;
@@ -1384,7 +1262,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             anchorClose = Close[firstOffset];
             anchorATR = atrAtCandidate;
             anchorTag = qualificationTag;
-            anchorStandaloneBigBody = standaloneBigBody;
 
             RebuildAvwapPlot(firstOffset);
 
@@ -1598,7 +1475,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                     "{0:yyyy-MM-dd HH:mm} SWING CONFIRMED | bar {1:HH:mm} extreme held {2} bars",
                     Time[0], Time[CurrentBar - confirmedBar], barsSinceCombo));
                 ClearPendingSwing();
-                InstallAnchor(confirmedBar, confirmedATR, "Swing");
+                if (EnableSwingAnchors)
+                {
+                    InstallAnchor(confirmedBar, confirmedATR, "Swing");
+                }
             }
             else
             {
@@ -1774,7 +1654,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         SignalTime = Time[0],
                         Direction = longTrigger ? "Long" : "Short",
                         Pillar = z.Tag,
-                        AnchorTag = z.HasA ? (anchorTag == "BigBody" && anchorStandaloneBigBody ? "BigBody-NoPP" : anchorTag) : string.Empty,
+                        AnchorTag = z.HasA ? anchorTag : string.Empty,
                         SignalPx = Close[0],
                         StopPx = plannedStopPrice,
                         StopPts = stopProxyPoints,
@@ -1804,10 +1684,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             };
             tradeTag = tradeZone.Tag;
             tradeAnchorTag = z.HasA ? anchorTag : string.Empty;
-            if (z.HasA && anchorTag == "BigBody" && anchorStandaloneBigBody)
-            {
-                tradeAnchorTag = "BigBody-NoPP";
-            }
             tradeZoneMin = z.Min;
             tradeZoneMax = z.Max;
 
@@ -2598,7 +2474,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             anchorClose = 0.0;
             anchorATR = 0.0;
             anchorTag = string.Empty;
-            anchorStandaloneBigBody = false;
             cumPV = 0.0;
             cumV = 0.0;
             avwap = 0.0;
@@ -2735,17 +2610,21 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool EnableNewsAnchor { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "News Anchor Times (HH:MM CT, comma)", Order = 15, GroupName = "02 | Anchor Qualification")]
+        [Display(Name = "Enable Swing Anchors", Order = 15, GroupName = "02 | Anchor Qualification")]
+        public bool EnableSwingAnchors { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "News Anchor Times (HH:MM CT, comma)", Order = 16, GroupName = "02 | Anchor Qualification")]
         public string NewsAnchorTimes { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.5, 10.0)]
-        [Display(Name = "News Anchor Body (ATR)", Order = 16, GroupName = "02 | Anchor Qualification")]
+        [Display(Name = "News Anchor Body (ATR)", Order = 17, GroupName = "02 | Anchor Qualification")]
         public double NewsAnchorATRMult { get; set; }
 
         [NinjaScriptProperty]
         [Range(1.0, 10.0)]
-        [Display(Name = "News Anchor Volume (x avg)", Order = 17, GroupName = "02 | Anchor Qualification")]
+        [Display(Name = "News Anchor Volume (x avg)", Order = 18, GroupName = "02 | Anchor Qualification")]
         public double NewsAnchorVolumeMult { get; set; }
 
         // 03 | Arming / Contact
