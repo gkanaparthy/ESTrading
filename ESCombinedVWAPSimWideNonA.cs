@@ -5,8 +5,8 @@
 // Variant of ESCombinedVWAPSim v1.1.1 (Nov 15, 2026): per-pillar max stop.
 // Zones containing the Anchor (A) keep MaxStopPoints (7 pts). Zones with
 // no Anchor component (pure D, W, G or combinations of them) use the new
-// configurable MaxStopPointsNonAnchor (default 15 pts). Everything else
-// is v1.1.1 unchanged, including the skipped-trade log and shadow tracking.
+// configurable MaxStopPointsNonAnchor (default 30 pts; raised from 15 on Nov 21, 2026).
+// Everything else is v1.1.1 unchanged, including the skipped-trade log and shadow tracking.
 // Logs are Name-based, so this variant writes
 // trades_ESCombinedVWAPSimWideNonA.csv and
 // skipped_trades_ESCombinedVWAPSimWideNonA.csv, separate from live.
@@ -407,7 +407,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // 04 | Trade management
                 MaxStopPoints = 7.0;
-                MaxStopPointsNonAnchor = 15.0;
+                MaxStopPointsNonAnchor = 30.0;
                 RRThresholdPoints = 5.0;
                 HighRR = 2.0;
                 LowRR = 1.0;
